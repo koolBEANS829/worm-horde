@@ -1,0 +1,1099 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Worm Horde Test</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: full-bleed 3D view, with a bench-instrument readout in one corner and the test controls along the bottom. */
+:root {
+  color-scheme: dark;
+  --pit: #0a0d11;
+  --bone: #ece6dc;
+  --ash: #a3a7aa;
+  --flesh: #e27a86;
+  --glass: rgba(10, 13, 17, .68);
+  --line: rgba(236, 230, 220, .2);
+  --ok: #8fdcc4;
+  --warn: #efb84f;
+  --bad: #f0695e;
+  --num: "Big Shoulders Display", Impact, "Arial Narrow", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+html, body { height: 100%; }
+[hidden] { display: none !important; }
+body {
+  margin: 0;
+  background: var(--pit); color: var(--bone);
+  font: 12.5px/1.4 var(--mono);
+  overflow: hidden; touch-action: none;
+  -webkit-user-select: none; user-select: none;
+}
+#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; outline: none; cursor: crosshair; }
+.hud {
+  position: fixed; inset: 0; pointer-events: none;
+  display: flex; flex-direction: column; justify-content: space-between; gap: 12px;
+  padding-block: max(12px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .9);
+}
+.readout { display: flex; align-items: flex-start; gap: 14px; align-self: flex-start; padding: 6px 10px; background: var(--glass); border-radius: 3px; }
+.fps { display: flex; flex-direction: column; align-items: center; min-width: 3.1rem; font-variant-numeric: tabular-nums; }
+.fps b { font: 700 3.1rem/.92 var(--num); color: var(--ok); }
+.fps b.warn { color: var(--warn); }
+.fps b.bad { color: var(--bad); }
+.fps span { font-size: .68rem; letter-spacing: .14em; color: var(--ash); }
+dl { margin: .2rem 0 0; display: grid; grid-template-columns: auto auto; gap: 1px 10px; font-variant-numeric: tabular-nums; }
+dt { color: var(--ash); }
+dd { margin: 0; text-align: right; }
+.bottom { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+#hint { margin: 0; align-self: center; text-align: center; color: var(--bone); padding: 3px 10px; background: var(--glass); border-radius: 3px; transition: opacity .6s; }
+#hint.gone { opacity: 0; }
+.controls { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.group { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; pointer-events: auto; }
+.group > span { color: var(--ash); padding: 6px 8px; background: var(--glass); border-radius: 3px; }
+button {
+  font: inherit; color: var(--bone); background: var(--glass);
+  border: 1px solid var(--line); border-radius: 3px; padding: 5px 9px; min-height: 32px;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+button:hover { border-color: var(--bone); }
+button:focus-visible { outline: 2px solid var(--bone); outline-offset: 1px; }
+button[aria-pressed="true"] { background: var(--flesh); border-color: var(--flesh); color: var(--pit); text-shadow: none; }
+button[aria-pressed="true"] kbd { color: var(--pit); }
+kbd { font: inherit; font-size: .72rem; color: var(--ash); }
+@media (pointer: coarse) { kbd { display: none; } }
+#fail { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding-block: 16px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); font-size: 1rem; background: var(--pit); }
+</style>
+</head>
+<body>
+<canvas id="view" tabindex="0" aria-label="3D test level where a horde of worms chases the viewer"></canvas>
+<div class="hud">
+  <div class="readout">
+    <div class="fps"><b id="fps">--</b><span>FPS</span></div>
+    <dl>
+      <dt>Physics</dt><dd id="phys">-- ms</dd>
+      <dt>Worms</dt><dd id="worms">--</dd>
+      <dt>Dots</dt><dd id="dots">--</dd>
+      <dt>Level bake</dt><dd id="bake">--</dd>
+    </dl>
+  </div>
+  <div class="bottom">
+    <p id="hint"></p>
+    <div class="controls">
+      <div class="group" role="group" aria-label="Worm count">
+        <span>Worms</span>
+        <button id="n1" data-n="1"><kbd>0</kbd>1</button>
+        <button id="n100" data-n="100"><kbd>1</kbd>100</button>
+        <button id="n500" data-n="500"><kbd>2</kbd>500</button>
+        <button id="n1000" data-n="1000"><kbd>3</kbd>1000</button>
+        <button id="n2000" data-n="2000"><kbd>4</kbd>2000</button>
+        <button id="n5000" data-n="5000"><kbd>5</kbd>5000</button>
+      </div>
+      <div class="group">
+        <button id="camview" aria-pressed="true"><kbd>C</kbd>Third person</button>
+        <button id="xray" aria-pressed="false"><kbd>V</kbd>Show dots</button>
+        <button id="lights" aria-pressed="false"><kbd>L</kbd>Lights on</button>
+        <button id="again"><kbd>R</kbd>Respawn</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="fail" hidden></div>
+
+<script src="vendor/three.min.js"></script>
+<script>
+(function () {
+'use strict';
+const $ = id => document.getElementById(id);
+function fail(msg) { const f = $('fail'); f.textContent = msg; f.hidden = false; }
+if (!window.THREE) { fail('The 3D library did not load. Check that vendor/three.min.js is next to this page.'); return; }
+
+/* ------------------------------------------------------------------ *
+ * Level: the same shapes get drawn and baked into the distance field. *
+ * ------------------------------------------------------------------ */
+const HW = 24, TOP = 12;
+const BOXES = [           // centre x,y,z  size x,y,z
+  [-10, 2, -5,    1, 4, 22],      // long wall
+  [7, 1.75, 9,    22, 3.5, 1],    // long wall
+  [4, 3, -1,      1, 6, 10],      // tall wall
+  [17, 2.25, -17, 10, 4.5, 10],   // platform
+  [-2, .75, 15,   1.5, 1.5, 1.5], // crates
+  [-6, .5, 14,    1, 1, 1],
+  [-13, .6, 15,   1.2, 1.2, 1.2],
+];
+const CYLS = [            // x,z, radius, height
+  [-4, -8, 1.1, 8], [-4, 3, 1.1, 8], [-15, -6, 1.4, 8],
+  [-15, 9, 1, 5], [12, 1, 1.2, 8], [13, 14, 1, 6],
+];
+const RAMP = { x0: 2, x1: 12, h: 4.5, z0: -20, z1: -15 };
+
+function levelD(x, y, z) {
+  let d = Math.min(y, HW - Math.abs(x), HW - Math.abs(z), TOP - y);
+  for (let i = 0; i < BOXES.length; i++) {
+    const b = BOXES[i];
+    const qx = Math.abs(x - b[0]) - b[3] / 2, qy = Math.abs(y - b[1]) - b[4] / 2, qz = Math.abs(z - b[2]) - b[5] / 2;
+    const ox = qx > 0 ? qx : 0, oy = qy > 0 ? qy : 0, oz = qz > 0 ? qz : 0;
+    const dist = Math.sqrt(ox * ox + oy * oy + oz * oz) + Math.min(Math.max(qx, qy, qz), 0);
+    if (dist < d) d = dist;
+  }
+  for (let i = 0; i < CYLS.length; i++) {
+    const c = CYLS[i];
+    const dr = Math.hypot(x - c[0], z - c[1]) - c[2], dy = y - c[3];
+    const dist = Math.min(Math.max(dr, dy), 0) + Math.hypot(Math.max(dr, 0), Math.max(dy, 0));
+    if (dist < d) d = dist;
+  }
+  const s = RAMP.h / (RAMP.x1 - RAMP.x0);
+  const slope = (y - (x - RAMP.x0) * s) / Math.hypot(1, s);
+  const r = Math.max(slope, RAMP.x0 - x, x - RAMP.x1, RAMP.z0 - z, z - RAMP.z1);
+  if (r < d) d = r;
+  return d;
+}
+
+const CELL = .25, INV = 1 / CELL, OX = -HW - 1, OY = -1, OZ = -HW - 1;
+const NX = Math.ceil((2 * HW + 2) * INV) + 1, NY = Math.ceil((TOP + 2) * INV) + 1, NZ = NX, NXY = NX * NY;
+const G = new Float32Array(NX * NY * NZ);
+const MX = NX - 1.001, MY = NY - 1.001, MZ = NZ - 1.001;
+const bakeStart = performance.now();
+for (let iz = 0, n = 0; iz < NZ; iz++) for (let iy = 0; iy < NY; iy++) for (let ix = 0; ix < NX; ix++) {
+  G[n++] = levelD(OX + ix * CELL, OY + iy * CELL, OZ + iz * CELL);
+}
+const bakeMs = performance.now() - bakeStart;
+
+function sdf(x, y, z) {
+  let fx = (x - OX) * INV, fy = (y - OY) * INV, fz = (z - OZ) * INV;
+  if (fx < 0) fx = 0; else if (fx > MX) fx = MX;
+  if (fy < 0) fy = 0; else if (fy > MY) fy = MY;
+  if (fz < 0) fz = 0; else if (fz > MZ) fz = MZ;
+  const ix = fx | 0, iy = fy | 0, iz = fz | 0, tx = fx - ix, ty = fy - iy, tz = fz - iz;
+  const i = ix + NX * iy + NXY * iz;
+  const a = G[i], b = G[i + 1], c = G[i + NX], d = G[i + NX + 1];
+  const e = G[i + NXY], f = G[i + NXY + 1], g = G[i + NXY + NX], h = G[i + NXY + NX + 1];
+  const ab = a + (b - a) * tx, cd = c + (d - c) * tx, ef = e + (f - e) * tx, gh = g + (h - g) * tx;
+  const u = ab + (cd - ab) * ty, v = ef + (gh - ef) * ty;
+  return u + (v - u) * tz;
+}
+let nX = 0, nY = 1, nZ = 0;
+function grad(x, y, z) {
+  let ix = ((x - OX) * INV + .5) | 0, iy = ((y - OY) * INV + .5) | 0, iz = ((z - OZ) * INV + .5) | 0;
+  if (ix < 1) ix = 1; else if (ix > NX - 2) ix = NX - 2;
+  if (iy < 1) iy = 1; else if (iy > NY - 2) iy = NY - 2;
+  if (iz < 1) iz = 1; else if (iz > NZ - 2) iz = NZ - 2;
+  const i = ix + NX * iy + NXY * iz;
+  const a = G[i + 1] - G[i - 1], b = G[i + NX] - G[i - NX], c = G[i + NXY] - G[i - NXY];
+  const l = Math.sqrt(a * a + b * b + c * c);
+  if (l < 1e-5) { nX = 0; nY = 1; nZ = 0; } else { nX = a / l; nY = b / l; nZ = c / l; }
+}
+
+/* ------------------------------------------------------------------ *
+ * Player, shared with the physics so worms can climb onto you.        *
+ * ------------------------------------------------------------------ */
+const player = { x: 17, y: 4.5, z: -17, vy: 0, grounded: false };
+const CAP = .42, CAPH = 1.85;
+
+/* ------------------------------------------------------------------ *
+ * Horde physics: dots on strings, no rotation, no rigid bodies.       *
+ * ------------------------------------------------------------------ */
+const D = 12;                 // dots per worm
+const R = .075;               // collision radius of a dot
+const L = .16;                // gap between neighbouring dots
+const DT = 1 / 60;
+const GRAV = 9.8 * DT * DT;   // per-step velocity change
+const DRIVE = .006;           // crawl strength, gives about 2.2 m/s on the floor
+const AIM_NEAR = 3;           // metres from you where worms stop aiming beside you
+const WRITHE = 2;            // how hard worms squirm while packed in a pile
+const STICK = R + .12;        // how close counts as touching a surface
+const VMAX = .3;
+const ITER = 3;
+const CAPNEAR2 = (CAP + STICK + .1) * (CAP + STICK + .1);
+
+function makeHorde(N) {
+  const M = N * D;
+  const P = new Float32Array(M * 4);   // x,y,z,_ per dot; also the GPU texture
+  const O = new Float32Array(M * 3);   // previous positions
+  const Touch = new Uint8Array(M);
+  const Ox = new Float32Array(N), Oz = new Float32Array(N), Sp = new Float32Array(N), Ph = new Float32Array(N);
+  const TS = 1 << Math.ceil(Math.log2(M * 2)), MASK = TS - 1;
+  const Start = new Int32Array(TS + 1), Order = new Int32Array(M), Key = new Int32Array(M);
+  const MAXP = M * 16, Pairs = new Int32Array(MAXP * 2);
+  const CS = 2 * R + .04, ICS = 1 / CS, MIN = 2 * R, MIN2 = MIN * MIN, PD2 = CS * CS, BEND = 1.8 * L, BEND2 = BEND * BEND;
+  const imul = Math.imul;
+  let np = 0, tick = 0;
+
+  function spawn() {
+    for (let w = 0; w < N; w++) {
+      let x, y, z, ang, ok = false, tries = 0;
+      while (!ok && tries++ < 40) {
+        x = (Math.random() * 2 - 1) * (HW - 2.5);
+        z = (Math.random() * 2 - 1) * (HW - 2.5);
+        y = .25 + Math.random() * 4;
+        ang = Math.random() * 6.283;
+        ok = Math.hypot(x - player.x, z - player.z) > 16;
+        for (let k = 0; ok && k < D; k++) {
+          if (levelD(x + Math.cos(ang) * k * L, y, z + Math.sin(ang) * k * L) < .15) ok = false;
+        }
+      }
+      if (!ok) { x = -20; z = 20; ang = 0; y = 1 + Math.random() * 6; }
+      for (let k = 0; k < D; k++) {
+        const i = w * D + k;
+        P[i * 4] = O[i * 3] = x + Math.cos(ang) * k * L;
+        P[i * 4 + 1] = O[i * 3 + 1] = y;
+        P[i * 4 + 2] = O[i * 3 + 2] = z + Math.sin(ang) * k * L;
+        P[i * 4 + 3] = 1;
+      }
+      const a = Math.random() * 6.283, rad = Math.sqrt(Math.random()) * 1.1;
+      Ox[w] = Math.cos(a) * rad; Oz[w] = Math.sin(a) * rad;
+      Sp[w] = .8 + Math.random() * .45;
+      Ph[w] = Math.random() * 6.283;
+    }
+  }
+
+  function crawl() {
+    tick++;
+    const wave = tick * .14;
+    const px = player.x, py = player.y, pz = player.z, gy = py + 1.2;
+    for (let w = 0; w < N; w++) {
+      const b = w * D, b4 = b * 4;
+      // Far off, each worm aims beside you so the horde fans out. Close in, they all aim at you.
+      const near = Math.min(1, Math.hypot(P[b4] - px, P[b4 + 2] - pz) / AIM_NEAR);
+      const gx = px + Ox[w] * near, gz = pz + Oz[w] * near;
+      const drive = DRIVE * Sp[w], ph = Ph[w];
+      for (let k = 0; k < D; k++) {
+        const i = b + k, i4 = i * 4, i3 = i * 3;
+        const x = P[i4], y = P[i4 + 1], z = P[i4 + 2];
+        const vx = x - O[i3], vy = y - O[i3 + 1], vz = z - O[i3 + 2];
+        O[i3] = x; O[i3 + 1] = y; O[i3 + 2] = z;
+
+        let dx = gx - x, dy = gy - y, dz = gz - z;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) + 1e-4;
+        dx /= dist; dy /= dist; dz /= dist;
+        const pull = 1 - .45 * k / (D - 1);
+
+        // What surface is this dot on: the level, or the player?
+        let d = sdf(x, y, z), hit = d < STICK, nx = 0, ny = 1, nz = 0;
+        if (hit) { grad(x, y, z); nx = nX; ny = nY; nz = nZ; }
+        const rx = x - px, rz = z - pz, h2 = rx * rx + rz * rz;
+        if (h2 < CAPNEAR2) {
+          const lo = py + CAP, hi = py + CAPH - CAP, cy = y < lo ? lo : (y > hi ? hi : y);
+          const ry = y - cy, cl = Math.sqrt(h2 + ry * ry) + 1e-5, cd = cl - CAP;
+          if (cd < STICK) { d = cd; hit = true; nx = rx / cl; ny = ry / cl; nz = rz / cl; }
+        }
+
+        let ax, ay, az, damp;
+        if (hit) {
+          const into = dx * nx + dy * ny + dz * nz;
+          let sx = dx - nx * into, sy = dy - ny * into, sz = dz - nz * into;
+          if (into < -.05 && ny < .85 && ny > -.5) sy += .25 - into * 1.3;     // goal is behind this surface: go up and over
+          const sl = Math.sqrt(sx * sx + sy * sy + sz * sz) + 1e-5;
+          sx /= sl; sy /= sl; sz /= sl;
+
+          // Slither: a sideways wave that travels down the body.
+          const fi = k > 0 ? i4 - 4 : i4, bi = k > 0 ? i4 : i4 + 4;
+          const bx = P[fi] - P[bi], by = P[fi + 1] - P[bi + 1], bz = P[fi + 2] - P[bi + 2];
+          const wig = Math.sin(wave + k * .9 + ph) * .7 / L;
+          const lx = (by * nz - bz * ny) * wig, ly = (bz * nx - bx * nz) * wig, lz = (bx * ny - by * nx) * wig;
+
+          const letGo = into > .3 && ny < .6;      // goal is out in the open: drop off the wall
+          const adh = letGo ? 0 : .0035, gf = (letGo || ny > .6) ? 1 : .12;
+          ax = (sx * pull + lx) * drive - nx * adh;
+          ay = (sy * pull + ly) * drive - ny * adh - GRAV * gf;
+          az = (sz * pull + lz) * drive - nz * adh;
+          damp = .88;
+        } else if (Touch[i]) {                      // on other worms: still fighting to get closer
+          const fi = k > 0 ? i4 - 4 : i4, bi = k > 0 ? i4 : i4 + 4;
+          const bx = P[fi] - P[bi], by = P[fi + 1] - P[bi + 1], bz = P[fi + 2] - P[bi + 2];
+          const wig = Math.sin(wave + k * .9 + ph) * WRITHE / L;
+          const lx = (by * dz - bz * dy) * wig, ly = (bz * dx - bx * dz) * wig, lz = (bx * dy - by * dx) * wig;
+          ax = (dx * pull * .7 + lx) * drive; ay = (dy * pull * .7 + ly) * drive - GRAV * .5; az = (dz * pull * .7 + lz) * drive;
+          damp = .92;
+        } else {                                    // in the air
+          ax = dx * drive * .1; ay = dy * drive * .1 - GRAV; az = dz * drive * .1;
+          damp = .995;
+        }
+
+        let nvx = vx * damp + ax, nvy = vy * damp + ay, nvz = vz * damp + az;
+        const sp2 = nvx * nvx + nvy * nvy + nvz * nvz;
+        if (sp2 > VMAX * VMAX) { const s = VMAX / Math.sqrt(sp2); nvx *= s; nvy *= s; nvz *= s; }
+        P[i4] = x + nvx; P[i4 + 1] = y + nvy; P[i4 + 2] = z + nvz;
+      }
+    }
+    Touch.fill(0);
+  }
+
+  function findPairs() {
+    Start.fill(0);
+    for (let i = 0; i < M; i++) {
+      const i4 = i * 4;
+      const h = (imul(Math.floor(P[i4] * ICS), 73856093) ^ imul(Math.floor(P[i4 + 1] * ICS), 19349663) ^ imul(Math.floor(P[i4 + 2] * ICS), 83492791)) & MASK;
+      Key[i] = h; Start[h]++;
+    }
+    let run = 0;
+    for (let h = 0; h < TS; h++) { run += Start[h]; Start[h] = run; }
+    Start[TS] = run;
+    for (let i = 0; i < M; i++) Order[--Start[Key[i]]] = i;
+
+    np = 0;
+    for (let i = 0; i < M; i++) {
+      const i4 = i * 4, x = P[i4], y = P[i4 + 1], z = P[i4 + 2];
+      const hx = Math.floor(x * ICS), hy = Math.floor(y * ICS), hz = Math.floor(z * ICS);
+      const wi = (i / D) | 0;
+      for (let cz = hz - 1; cz <= hz + 1; cz++) for (let cy = hy - 1; cy <= hy + 1; cy++) for (let cx = hx - 1; cx <= hx + 1; cx++) {
+        const h = (imul(cx, 73856093) ^ imul(cy, 19349663) ^ imul(cz, 83492791)) & MASK;
+        for (let q = Start[h], e = Start[h + 1]; q < e; q++) {
+          const j = Order[q];
+          if (j <= i) continue;
+          if (j - i <= 2 && ((j / D) | 0) === wi) continue;     // neighbours on the same worm
+          const j4 = j * 4, dx = P[j4] - x, dy = P[j4 + 1] - y, dz = P[j4 + 2] - z;
+          if (dx * dx + dy * dy + dz * dz < PD2 && np < MAXP) { Pairs[np * 2] = i; Pairs[np * 2 + 1] = j; np++; }
+        }
+      }
+    }
+  }
+
+  function solve() {
+    const px = player.x, py = player.y, pz = player.z, lo = py + CAP, hi = py + CAPH - CAP;
+    const CAPR = CAP + R, CAPR2 = CAPR * CAPR;
+    for (let iter = 0; iter < ITER; iter++) {
+      // Strings: shove neighbours back to their rest distance.
+      for (let w = 0; w < N; w++) {
+        const b = w * D;
+        for (let c = 0; c < D - 1; c++) {
+          const k = iter & 1 ? D - 2 - c : c, a4 = (b + k) * 4, b4 = a4 + 4;
+          const dx = P[b4] - P[a4], dy = P[b4 + 1] - P[a4 + 1], dz = P[b4 + 2] - P[a4 + 2];
+          const l = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          if (l < 1e-6) continue;
+          const s = (l - L) / l * .5;
+          P[a4] += dx * s; P[a4 + 1] += dy * s; P[a4 + 2] += dz * s;
+          P[b4] -= dx * s; P[b4 + 1] -= dy * s; P[b4 + 2] -= dz * s;
+        }
+        if (iter === 0) for (let k = 0; k < D - 2; k++) {       // keep the body from folding flat
+          const a4 = (b + k) * 4, b4 = a4 + 8;
+          const dx = P[b4] - P[a4], dy = P[b4 + 1] - P[a4 + 1], dz = P[b4 + 2] - P[a4 + 2];
+          const l2 = dx * dx + dy * dy + dz * dz;
+          if (l2 >= BEND2 || l2 < 1e-9) continue;
+          const l = Math.sqrt(l2), s = (BEND - l) / l * .35;
+          P[a4] -= dx * s; P[a4 + 1] -= dy * s; P[a4 + 2] -= dz * s;
+          P[b4] += dx * s; P[b4 + 1] += dy * s; P[b4 + 2] += dz * s;
+        }
+      }
+      // Worm against worm, using the pair list from the grid.
+      for (let p = 0; p < np; p++) {
+        const i = Pairs[p * 2], j = Pairs[p * 2 + 1], a4 = i * 4, b4 = j * 4;
+        const dx = P[b4] - P[a4], dy = P[b4 + 1] - P[a4 + 1], dz = P[b4 + 2] - P[a4 + 2];
+        const l2 = dx * dx + dy * dy + dz * dz;
+        if (l2 >= MIN2 || l2 < 1e-10) continue;
+        const l = Math.sqrt(l2), s = (MIN - l) / l * .42;
+        P[a4] -= dx * s; P[a4 + 1] -= dy * s; P[a4 + 2] -= dz * s;
+        P[b4] += dx * s; P[b4 + 1] += dy * s; P[b4 + 2] += dz * s;
+        Touch[i] = 1; Touch[j] = 1;
+      }
+      // Level and player: one number per dot, push out if it's too low.
+      for (let i = 0; i < M; i++) {
+        const i4 = i * 4;
+        let x = P[i4], y = P[i4 + 1], z = P[i4 + 2];
+        const d = sdf(x, y, z);
+        if (d < R) {
+          grad(x, y, z);
+          const s = R - d;
+          x += nX * s; y += nY * s; z += nZ * s;
+          P[i4] = x; P[i4 + 1] = y; P[i4 + 2] = z;
+        }
+        const rx = x - px, rz = z - pz, h2 = rx * rx + rz * rz;
+        if (h2 < CAPR2) {
+          const cy = y < lo ? lo : (y > hi ? hi : y), ry = y - cy;
+          const l2 = h2 + ry * ry;
+          if (l2 < CAPR2 && l2 > 1e-8) {
+            const l = Math.sqrt(l2), s = (CAPR - l) / l;
+            P[i4] = x + rx * s; P[i4 + 1] = y + ry * s; P[i4 + 2] = z + rz * s;
+          }
+        }
+      }
+    }
+  }
+
+  function blast(x, y, z, rad, power) {
+    for (let i = 0; i < M; i++) {
+      const i4 = i * 4, i3 = i * 3;
+      const dx = P[i4] - x, dy = P[i4 + 1] - y, dz = P[i4 + 2] - z;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 > rad * rad) continue;
+      const d = Math.sqrt(d2) + .01, f = power * (1 - d / rad) / d;
+      O[i3] -= dx * f; O[i3 + 1] -= dy * f + power * .5 * (1 - d / rad); O[i3 + 2] -= dz * f;
+    }
+  }
+
+  spawn();
+  return {
+    N, M, P, O, spawn, blast,
+    step() { crawl(); findPairs(); solve(); },
+    pairs() { return np; },
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Rendering: one tube mesh, instanced, bent on the GPU from the dots. *
+ * ------------------------------------------------------------------ */
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas: $('view'), antialias: true, powerPreference: 'high-performance' });
+  if (!renderer.capabilities.isWebGL2) throw new Error('no webgl2');
+} catch (e) { fail('This test needs WebGL 2. Turn on hardware acceleration in your browser settings, then reload.'); return; }
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0e14);
+scene.fog = new THREE.FogExp2(0x0a0e14, .022);
+const camera = new THREE.PerspectiveCamera(72, 1, .05, 140);
+camera.rotation.order = 'YXZ';
+scene.add(camera);
+
+const hemi = new THREE.HemisphereLight(0x8fa4c4, 0x24262b, .9);
+scene.add(hemi);
+const torch = new THREE.SpotLight(0xfff0dc, 42, 70, .62, .5, 1.2);
+torch.position.set(.3, -.15, 1.5);
+torch.castShadow = true;
+torch.shadow.mapSize.set(1024, 1024);
+torch.shadow.camera.near = 1.4;
+torch.shadow.camera.far = 70;
+torch.shadow.bias = -.0006;
+torch.shadow.normalBias = .02;
+camera.add(torch);
+torch.target.position.set(0, 0, -8);
+camera.add(torch.target);
+const sun = new THREE.DirectionalLight(0xfff3e4, 3);
+sun.position.set(-18, 34, 14);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -32, right: 32, top: 32, bottom: -32, near: 1, far: 90 });
+sun.shadow.bias = -.0005;
+sun.shadow.normalBias = .03;
+sun.visible = false;
+scene.add(sun);
+const flash = new THREE.PointLight(0xffb98a, 0, 22, 1.7);
+scene.add(flash);
+const boom = new THREE.Mesh(new THREE.SphereGeometry(1, 18, 12),
+  new THREE.MeshBasicMaterial({ color: 0xffb27a, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+boom.visible = false;
+scene.add(boom);
+const orb = new THREE.Mesh(new THREE.SphereGeometry(.22, 18, 12), new THREE.MeshBasicMaterial({ color: 0xfff6dc, fog: false, transparent: true, toneMapped: false }));
+orb.rotation.order = 'YXZ';
+const orbLight = new THREE.PointLight(0xffe2a8, 26, 16, 1.6);
+orb.add(orbLight);
+scene.add(orb);
+const glowCanvas = document.createElement('canvas');
+glowCanvas.width = glowCanvas.height = 128;
+{
+  const c = glowCanvas.getContext('2d'), g = c.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, 'rgba(255,238,195,.95)');
+  g.addColorStop(.28, 'rgba(255,214,140,.42)');
+  g.addColorStop(1, 'rgba(255,190,110,0)');
+  c.fillStyle = g;
+  c.fillRect(0, 0, 128, 128);
+}
+const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(glowCanvas), blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, fog: false, toneMapped: false }));
+glow.scale.setScalar(1.6);
+glow.renderOrder = 4;
+orb.add(glow);
+const ARROW_END = 1.75;
+// Flat arrow lying in the view plane: the camera sits above that plane, so it always reads as an arrow.
+const arrowShape = new THREE.Shape();
+[[.055, .3], [.055, 1.2], [.32, 1.2], [0, ARROW_END], [-.32, 1.2], [-.055, 1.2], [-.055, .3]].forEach((q, i) => (i ? arrowShape.lineTo(q[0], q[1]) : arrowShape.moveTo(q[0], q[1])));
+const arrow = new THREE.Mesh(new THREE.ShapeGeometry(arrowShape).rotateX(-Math.PI / 2),
+  new THREE.MeshBasicMaterial({ color: 0xffd76a, fog: false, transparent: true, depthTest: false, toneMapped: false, side: THREE.DoubleSide }));
+orb.add(arrow);
+orb.renderOrder = arrow.renderOrder = 5;
+
+// Level meshes, with a procedural 1 m grid so scale is readable.
+const levelMat = new THREE.MeshStandardMaterial({ color: 0x8d9297, roughness: .92 });
+levelMat.onBeforeCompile = s => {
+  s.vertexShader = s.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying vec3 vWP; varying vec3 vWN;')
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWP=(modelMatrix*vec4(transformed,1.)).xyz; vWN=normal;');
+  s.fragmentShader = s.fragmentShader
+    .replace('#include <common>', '#include <common>\nvarying vec3 vWP; varying vec3 vWN;')
+    .replace('#include <color_fragment>', `#include <color_fragment>
+      vec3 an=abs(vWN);
+      vec2 gg=an.y>.6?vWP.xz:(an.x>.6?vWP.zy:vWP.xy);
+      vec2 w1=fwidth(gg);
+      vec2 f1=abs(fract(gg-.5)-.5)/w1;
+      vec2 f4=abs(fract(gg/4.-.5)-.5)/(w1/4.);
+      float l1=1.-min(min(f1.x,f1.y),1.), l4=1.-min(min(f4.x,f4.y)/1.5,1.);
+      diffuseColor.rgb*=1.-.16*l1-.3*l4;`);
+};
+function addBox(cx, cy, cz, sx, sy, sz) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), levelMat);
+  m.position.set(cx, cy, cz); m.castShadow = m.receiveShadow = true; scene.add(m);
+}
+BOXES.forEach(b => addBox(...b));
+addBox(0, -.5, 0, 2 * HW + 4, 1, 2 * HW + 4);
+addBox(-HW - 1, TOP / 2, 0, 2, TOP, 2 * HW + 4);
+addBox(HW + 1, TOP / 2, 0, 2, TOP, 2 * HW + 4);
+addBox(0, TOP / 2, -HW - 1, 2 * HW + 4, TOP, 2);
+addBox(0, TOP / 2, HW + 1, 2 * HW + 4, TOP, 2);
+CYLS.forEach(c => {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(c[2], c[2], c[3], 28), levelMat);
+  m.position.set(c[0], c[3] / 2, c[1]); m.castShadow = m.receiveShadow = true; scene.add(m);
+});
+{
+  const { x0, x1, h, z0, z1 } = RAMP;
+  const A = [x0, 0, z0], B = [x1, 0, z0], C = [x1, h, z0], Dd = [x0, 0, z1], E = [x1, 0, z1], F = [x1, h, z1];
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute([A, Dd, F, A, F, C, A, C, B, Dd, E, F].flat(), 3));
+  g.computeVertexNormals();
+  const m = new THREE.Mesh(g, levelMat);
+  m.castShadow = m.receiveShadow = true; scene.add(m);
+}
+
+const wormUniforms = { uDots: { value: null }, uTime: { value: 0 }, uRim: { value: .75 } };
+const SKIN = `
+uniform highp sampler2D uDots;
+uniform float uTime;
+attribute float aWorm;
+attribute float aSeed;
+varying float vT;
+varying float vSeed;
+const int WD = ${D};
+vec3 wormDot(int i, int w) { return texelFetch(uDots, ivec2(i, w), 0).xyz; }
+void wormSkin(out vec3 C, out vec3 Rd, out float rad) {
+  int w = int(aWorm + .5);
+  float t = position.x;
+  float s = t * float(WD - 1);
+  int i = int(min(floor(s), float(WD - 2)));
+  float u = s - float(i);
+  vec3 p1 = wormDot(i, w), p2 = wormDot(i + 1, w);
+  vec3 p0 = i > 0 ? wormDot(i - 1, w) : 2. * p1 - p2;
+  vec3 p3 = i < WD - 2 ? wormDot(i + 2, w) : 2. * p2 - p1;
+  vec3 a = 2. * p0 - 5. * p1 + 4. * p2 - p3, b = -p0 + 3. * p1 - 3. * p2 + p3;
+  C = .5 * (2. * p1 + (p2 - p0) * u + a * u * u + b * u * u * u);
+  vec3 T = normalize((p2 - p0) + 2. * a * u + 3. * b * u * u);
+  float fk = 1. / max(1. + T.y, .002);
+  vec3 N = normalize(vec3(1. - T.x * T.x * fk, -T.x, -T.x * T.z * fk)), B = cross(T, N);
+  Rd = N * position.y + B * position.z;
+  float cap = pow(max(sin(3.14159 * clamp(t, 0., 1.)), 0.), .36);
+  float pulse = 1. + .17 * sin(t * 15. - uTime * 7. + aSeed * 40.);
+  rad = .072 * cap * pulse * (.82 + .36 * aSeed);
+  vT = t; vSeed = aSeed;
+}`;
+const wormMat = new THREE.MeshStandardMaterial({ roughness: .3, metalness: 0 });
+wormMat.onBeforeCompile = s => {
+  s.uniforms.uDots = wormUniforms.uDots; s.uniforms.uTime = wormUniforms.uTime; s.uniforms.uRim = wormUniforms.uRim;
+  s.vertexShader = s.vertexShader
+    .replace('#include <common>', '#include <common>\n' + SKIN)
+    .replace('#include <beginnormal_vertex>', 'vec3 wC, wR; float wRad; wormSkin(wC, wR, wRad); vec3 objectNormal = wR;')
+    .replace('#include <begin_vertex>', 'vec3 transformed = wC + wR * wRad;');
+  s.fragmentShader = s.fragmentShader
+    .replace('#include <common>', '#include <common>\nvarying float vT; varying float vSeed; uniform float uRim;')
+    .replace('#include <color_fragment>', `#include <color_fragment>
+      vec3 wBase = mix(vec3(.50,.07,.11), vec3(.82,.27,.31), vSeed);
+      wBase *= 1. - .25 * pow(.5 + .5 * sin(vT * 130.), 8.);
+      wBase = mix(wBase, vec3(.24,.03,.06), smoothstep(.1, .0, vT));
+      diffuseColor.rgb = wBase;`)
+    .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+      float wF = 1. - max(dot(normalize(normal), normalize(vViewPosition)), 0.);
+      totalEmissiveRadiance += vec3(.55,.10,.13) * pow(wF, 3.) * uRim;`);
+};
+const wormDepth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+wormDepth.onBeforeCompile = s => {
+  s.uniforms.uDots = wormUniforms.uDots; s.uniforms.uTime = wormUniforms.uTime;
+  s.vertexShader = s.vertexShader
+    .replace('#include <common>', '#include <common>\n' + SKIN)
+    .replace('#include <begin_vertex>', 'vec3 wC, wR; float wRad; wormSkin(wC, wR, wRad); vec3 transformed = wC + wR * wRad;');
+};
+
+const dotMat = new THREE.PointsMaterial({ color: 0xffe2d2, size: .075, sizeAttenuation: true });
+dotMat.onBeforeCompile = s => {
+  s.vertexShader = s.vertexShader.replace('#include <fog_vertex>', '#include <fog_vertex>\ngl_PointSize = min(gl_PointSize, 15.);');
+  s.fragmentShader = s.fragmentShader.replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\nif (length(gl_PointCoord - .5) > .5) discard;');
+};
+const stringMat = new THREE.LineBasicMaterial({ color: 0xe27a86, transparent: true, opacity: .75 });
+
+function tubeGeometry(N) {
+  const lenSeg = N <= 500 ? 32 : (N <= 1000 ? 24 : (N <= 2000 ? 16 : 11)), rad = N <= 500 ? 10 : (N <= 1000 ? 8 : (N <= 2000 ? 6 : 5));
+  const pos = [], idx = [];
+  for (let j = 0; j <= lenSeg; j++) for (let i = 0; i <= rad; i++) {
+    const a = i / rad * 6.28318;
+    const u = j / lenSeg;
+    pos.push(u * .4 + (.5 - .5 * Math.cos(Math.PI * u)) * .6, Math.cos(a), Math.sin(a));
+  }
+  for (let j = 0; j < lenSeg; j++) for (let i = 0; i < rad; i++) {
+    const a = j * (rad + 1) + i, b = a + 1, c = a + rad + 1, d = c + 1;
+    idx.push(a, b, c, b, d, c);
+  }
+  const g = new THREE.InstancedBufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  const aw = new Float32Array(N), as = new Float32Array(N);
+  for (let w = 0; w < N; w++) { aw[w] = w; as[w] = Math.random(); }
+  g.setAttribute('aWorm', new THREE.InstancedBufferAttribute(aw, 1));
+  g.setAttribute('aSeed', new THREE.InstancedBufferAttribute(as, 1));
+  g.instanceCount = N;
+  return g;
+}
+
+let horde = null, tubes = null, dotsObj = null, stringsObj = null, dotTex = null, dotBuf = null;
+let showDots = false, isDay = false;
+
+function setWorms(N) {
+  if (tubes) {
+    scene.remove(tubes, dotsObj, stringsObj);
+    tubes.geometry.dispose(); dotsObj.geometry.dispose(); stringsObj.geometry.dispose(); dotTex.dispose();
+  }
+  horde = makeHorde(N);
+  dotTex = new THREE.DataTexture(horde.P, D, N, THREE.RGBAFormat, THREE.FloatType);
+  dotTex.minFilter = dotTex.magFilter = THREE.NearestFilter;
+  dotTex.needsUpdate = true;
+  wormUniforms.uDots.value = dotTex;
+
+  tubes = new THREE.Mesh(tubeGeometry(N), wormMat);
+  tubes.customDepthMaterial = wormDepth;
+  tubes.frustumCulled = false;
+  tubes.castShadow = N <= 2000;
+  tubes.receiveShadow = true;
+  scene.add(tubes);
+
+  dotBuf = new THREE.InterleavedBuffer(horde.P, 4);
+  dotBuf.setUsage(THREE.DynamicDrawUsage);
+  const dg = new THREE.BufferGeometry();
+  dg.setAttribute('position', new THREE.InterleavedBufferAttribute(dotBuf, 3, 0));
+  dotsObj = new THREE.Points(dg, dotMat);
+  dotsObj.frustumCulled = false;
+  const sg = new THREE.BufferGeometry();
+  sg.setAttribute('position', new THREE.InterleavedBufferAttribute(dotBuf, 3, 0));
+  const li = new Uint32Array(N * (D - 1) * 2);
+  for (let w = 0, n = 0; w < N; w++) for (let k = 0; k < D - 1; k++) { li[n++] = w * D + k; li[n++] = w * D + k + 1; }
+  sg.setIndex(new THREE.BufferAttribute(li, 1));
+  stringsObj = new THREE.LineSegments(sg, stringMat);
+  stringsObj.frustumCulled = false;
+  scene.add(dotsObj, stringsObj);
+  applyView();
+
+  $('worms').textContent = N.toLocaleString('en-US');
+  $('dots').textContent = horde.M.toLocaleString('en-US');
+  document.querySelectorAll('[data-n]').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.n === N)));
+  physMs = 0;
+}
+function applyView() {
+  tubes.visible = !showDots;
+  dotsObj.visible = stringsObj.visible = showDots;
+  $('xray').setAttribute('aria-pressed', String(showDots));
+  $('xray').lastChild.textContent = showDots ? 'Show worms' : 'Show dots';
+}
+function setLights(day) {
+  isDay = day;
+  const c = day ? 0x9fb3c6 : 0x0a0e14;
+  scene.background.set(c);
+  scene.fog.color.set(c);
+  scene.fog.density = day ? .005 : .022;
+  hemi.intensity = day ? 1.5 : .9;
+  sun.visible = day;
+  torch.visible = !day;
+  wormUniforms.uRim.value = day ? .15 : .75;
+  $('lights').setAttribute('aria-pressed', String(day));
+}
+
+/* ------------------------------------------------------------------ *
+ * Moving around: a short guided walk until you take over.             *
+ * ------------------------------------------------------------------ */
+const WAY = [[17, -17], [1, -17.5], [-6, -19], [-18, -18], [-18, 18], [20, 18], [21, -6], [8, -8], [0, -12], [0, -17.5], [13, -17.5]];
+const reduced = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+const coarse = window.matchMedia && matchMedia('(pointer: coarse)').matches;
+let thirdPerson = true, chaseD = 4;
+let tour = true, wayI = 1, dwell = 15, yaw = 0, pitch = -.25, dragMode = false, dragging = false, moved = 0;
+let hintTimer = 0, walked = false;
+const keys = new Set();
+const stick = { id: -1, x0: 0, y0: 0, x: 0, y: 0 }, lookTouch = { id: -1, x: 0, y: 0, moved: 0, t: 0 };
+const canvas = $('view');
+
+function angDiff(a, b) { let d = (b - a) % 6.28318; if (d > 3.14159) d -= 6.28318; if (d < -3.14159) d += 6.28318; return d; }
+
+function movePlayer(dt) {
+  let wx = 0, wz = 0, speed = 4.6;
+  if (tour) {
+    if (dwell > 0 || reduced) { dwell -= dt; }
+    else {
+      const w = WAY[wayI], dx = w[0] - player.x, dz = w[1] - player.z, l = Math.hypot(dx, dz);
+      if (l < .9) {
+        wayI = (wayI + 1) % WAY.length;
+        if (wayI === 0) { dwell = 15; wayI = 1; }
+      } else { wx = dx / l; wz = dz / l; speed = 2.7; }
+    }
+  } else {
+    let f = 0, s = 0;
+    if (keys.has('KeyW') || keys.has('ArrowUp')) f++;
+    if (keys.has('KeyS') || keys.has('ArrowDown')) f--;
+    if (keys.has('KeyD') || keys.has('ArrowRight')) s++;
+    if (keys.has('KeyA') || keys.has('ArrowLeft')) s--;
+    f -= stick.y; s += stick.x;
+    const l = Math.hypot(f, s);
+    if (l > 1) { f /= l; s /= l; }
+    const sn = Math.sin(yaw), cs = Math.cos(yaw);
+    wx = -sn * f + cs * s; wz = -cs * f - sn * s;
+    if (keys.has('ShiftLeft') || keys.has('ShiftRight')) speed = 7;
+    if (keys.has('Space') && player.grounded) { player.vy = 6.2; player.grounded = false; }
+    if (l > .05 && !walked) { walked = true; hintTimer = 7; }
+  }
+  player.x += wx * speed * dt; player.z += wz * speed * dt;
+  player.vy -= 16 * dt;
+  player.y += player.vy * dt;
+  player.grounded = false;
+  for (let h = 0; h < 3; h++) {
+    const hy = h === 0 ? CAP : (h === 1 ? .95 : CAPH - CAP);
+    const d = sdf(player.x, player.y + hy, player.z);
+    if (d < CAP) {
+      grad(player.x, player.y + hy, player.z);
+      const s = CAP - d;
+      if (nY > .6) { player.y += s / nY; if (player.vy < 0) player.vy = 0; player.grounded = true; }
+      else { player.x += nX * s; player.y += nY * s; player.z += nZ * s; }
+    }
+  }
+  placeCamera(dt);
+}
+
+function placeCamera(dt) {
+  if (tour) overhead(dt);
+  else if (thirdPerson) chaseCam(dt);
+  else {
+    camera.position.set(player.x, player.y + 1.6, player.z);
+    camera.rotation.set(pitch, yaw, 0);
+  }
+}
+
+// Third person: behind and a little above the orb. The distance field stops it entering walls.
+function chaseCam(dt) {
+  const px = player.x, py = player.y + 1.2, pz = player.z;
+  camera.rotation.set(Math.max(-1.5, pitch - .21), yaw, 0);
+  orb.position.set(px, py, pz);
+  orb.rotation.set(pitch, yaw, 0);
+  const cp = Math.cos(pitch), sp = Math.sin(pitch), sn = Math.sin(yaw), cs = Math.cos(yaw);
+  let ox = sn * (cp * 3.4 + sp * 2), oy = cp * 2 - sp * 3.4, oz = cs * (cp * 3.4 + sp * 2);   // back and up, in the view's own frame
+  const len = Math.hypot(ox, oy, oz);
+  ox /= len; oy /= len; oz /= len;
+  let t = .2;
+  while (t < len) {
+    const d = sdf(px + ox * t, py + oy * t, pz + oz * t);
+    if (d < .25) break;
+    t += Math.max(d - .2, .05);
+  }
+  if (t > len) t = len;
+  chaseD = t < chaseD ? t : chaseD + (t - chaseD) * Math.min(1, dt * 3);
+  camera.position.set(px + ox * chaseD, py + oy * chaseD, pz + oz * chaseD);
+}
+
+function applyCamera() {
+  const third = thirdPerson && !tour;
+  orb.visible = tour || third;
+  arrow.visible = third;
+  orb.material.depthTest = glow.material.depthTest = !third;
+  orbLight.intensity = tour ? 26 : 6;
+  $('camview').setAttribute('aria-pressed', String(thirdPerson));
+}
+function switchView() {
+  if (tour) { thirdPerson = true; endTour(); lockMouse(); return; }
+  thirdPerson = !thirdPerson;
+  applyCamera();
+}
+
+// Overhead camera: stays behind the horde, looking past it toward the orb.
+const cam = { x: -14, y: 10.6, z: 14, lx: 0, ly: 2, lz: 0, ready: false };
+function hordeCentre() {
+  const P = horde.P; let x = 0, y = 0, z = 0, n = 0;
+  for (let i = 0; i < horde.M; i += 7) { x += P[i * 4]; y += P[i * 4 + 1]; z += P[i * 4 + 2]; n++; }
+  return { x: x / n, y: y / n, z: z / n };
+}
+function overhead(dt) {
+  const c = hordeCentre();
+  let ax = c.x - player.x, az = c.z - player.z, l = Math.hypot(ax, az);
+  if (l < 3) { ax = cam.x - c.x; az = cam.z - c.z; l = Math.hypot(ax, az) || 1; }
+  const clamp = v => Math.max(-22, Math.min(22, v));
+  const wantX = clamp(c.x + ax / l * 13), wantZ = clamp(c.z + az / l * 13);
+  const tx = (c.x + player.x) / 2, ty = (c.y + player.y + 1) / 2, tz = (c.z + player.z) / 2;
+  const a = cam.ready ? Math.min(1, dt * .6) : 1, b = cam.ready ? Math.min(1, dt * 1.4) : 1;
+  cam.ready = true;
+  cam.x += (wantX - cam.x) * a; cam.z += (wantZ - cam.z) * a;
+  cam.lx += (tx - cam.lx) * b; cam.ly += (ty - cam.ly) * b; cam.lz += (tz - cam.lz) * b;
+  camera.position.set(cam.x, cam.y, cam.z);
+  camera.lookAt(cam.lx, cam.ly, cam.lz);
+  orb.position.set(player.x, player.y + 1.2, player.z);
+}
+
+let flashLeft = 0;
+function fireBlast() {
+  const sx = Math.sin(yaw), cx = Math.cos(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const dx = -sx * cp, dy = sp, dz = -cx * cp;
+  const from = !tour && thirdPerson ? orb.position : camera.position;
+  const ex = from.x, ey = from.y, ez = from.z;
+  let t = .5;
+  for (let i = 0; i < 64 && t < 45; i++) {
+    const d = sdf(ex + dx * t, ey + dy * t, ez + dz * t);
+    if (d < .06) break;
+    t += Math.max(d, .1);
+  }
+  t = Math.min(t, 45);
+  const P = horde.P;
+  for (let i = 0; i < horde.M; i++) {
+    const qx = P[i * 4] - ex, qy = P[i * 4 + 1] - ey, qz = P[i * 4 + 2] - ez;
+    const s = qx * dx + qy * dy + qz * dz;
+    if (s >= .5 && s < t && qx * qx + qy * qy + qz * qz - s * s < .36) t = s;
+  }
+  const hx = ex + dx * t, hy = ey + dy * t, hz = ez + dz * t;
+  horde.blast(hx, hy, hz, 6, .34);
+  flash.position.set(hx, hy + .3, hz);
+  boom.position.set(hx, hy, hz);
+  boom.visible = true;
+  flashLeft = .32;
+}
+
+function setHint() {
+  const h = $('hint');
+  let text = '';
+  if (tour) text = coarse ? 'The worms are chasing the orb. Tap to become it.' : 'The worms are chasing the orb. Click to become it.';
+  else if (coarse) text = 'Left thumb moves. Right thumb looks. Tap to blast.';
+  else if (document.pointerLockElement === canvas) text = 'WASD moves. Shift runs. Space jumps. Click blasts. C switches view. Esc frees the mouse.';
+  else if (dragMode) text = 'WASD moves. Drag to look. Click blasts. C switches view.';
+  else text = 'Click to grab the mouse.';
+  h.textContent = text;
+  h.classList.toggle('gone', false);
+}
+function torchFor(overheadView) {
+  torch.intensity = overheadView ? 42 : 11;
+  torch.decay = overheadView ? 1.2 : 1;
+}
+function endTour() {
+  if (!tour) return;
+  tour = false;
+  torchFor(false);
+  applyCamera();
+  const c = hordeCentre(), dx = c.x - player.x, dz = c.z - player.z;
+  yaw = Math.hypot(dx, dz) > 1 ? Math.atan2(-dx, -dz) : 0;
+  pitch = -.12;
+  setHint();
+}
+function lockMouse() {
+  try {
+    const r = canvas.requestPointerLock();
+    if (r && r.catch) r.catch(() => { dragMode = true; setHint(); });
+  } catch (e) { dragMode = true; setHint(); }
+}
+function look(dx, dy) {
+  yaw -= dx * .0023;
+  pitch = Math.max(-1.5, Math.min(1.5, pitch - dy * .0023));
+}
+canvas.addEventListener('pointerdown', e => {
+  canvas.focus({ preventScroll: true });
+  if (e.pointerType === 'touch') {
+    const wasTour = tour; endTour();
+    if (e.clientX < innerWidth / 2 && stick.id < 0) { stick.id = e.pointerId; stick.x0 = e.clientX; stick.y0 = e.clientY; stick.x = stick.y = 0; }
+    else if (lookTouch.id < 0) { Object.assign(lookTouch, { id: e.pointerId, x: e.clientX, y: e.clientY, moved: wasTour ? 99 : 0, t: performance.now() }); }
+    return;
+  }
+  if (e.button !== 0) return;
+  if (tour) { endTour(); lockMouse(); return; }
+  if (document.pointerLockElement === canvas) { fireBlast(); return; }
+  if (dragMode) { dragging = true; moved = 0; return; }
+  lockMouse();
+});
+addEventListener('pointermove', e => {
+  if (e.pointerType === 'touch') {
+    if (e.pointerId === stick.id) {
+      stick.x = Math.max(-1, Math.min(1, (e.clientX - stick.x0) / 55));
+      stick.y = Math.max(-1, Math.min(1, (e.clientY - stick.y0) / 55));
+      if (!walked) { walked = true; hintTimer = 7; }
+    } else if (e.pointerId === lookTouch.id) {
+      const dx = e.clientX - lookTouch.x, dy = e.clientY - lookTouch.y;
+      lookTouch.moved += Math.abs(dx) + Math.abs(dy);
+      lookTouch.x = e.clientX; lookTouch.y = e.clientY;
+      look(dx * 1.6, dy * 1.6);
+    }
+    return;
+  }
+  if (document.pointerLockElement === canvas) look(e.movementX, e.movementY);
+  else if (dragging) { moved += Math.abs(e.movementX) + Math.abs(e.movementY); look(e.movementX * 1.4, e.movementY * 1.4); }
+});
+function pointerEnd(e) {
+  if (e.pointerType === 'touch') {
+    if (e.pointerId === stick.id) { stick.id = -1; stick.x = stick.y = 0; }
+    else if (e.pointerId === lookTouch.id) {
+      if (lookTouch.moved < 10 && performance.now() - lookTouch.t < 280 && e.type === 'pointerup') fireBlast();
+      lookTouch.id = -1;
+    }
+    return;
+  }
+  if (dragging) { dragging = false; if (moved < 5) fireBlast(); }
+}
+addEventListener('pointerup', pointerEnd);
+addEventListener('pointercancel', pointerEnd);
+document.addEventListener('pointerlockchange', setHint);
+document.addEventListener('pointerlockerror', () => { dragMode = true; setHint(); });
+
+const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space']);
+addEventListener('keydown', e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (MOVE_KEYS.has(e.code)) { e.preventDefault(); endTour(); }
+  keys.add(e.code);
+  if (e.repeat) return;
+  const counts = { Digit0: 1, Digit1: 100, Digit2: 500, Digit3: 1000, Digit4: 2000, Digit5: 5000 };
+  if (counts[e.code]) setWorms(counts[e.code]);
+  if (e.code === 'KeyC') switchView();
+  if (e.code === 'KeyV') { showDots = !showDots; applyView(); }
+  if (e.code === 'KeyL') setLights(!isDay);
+  if (e.code === 'KeyR') setWorms(horde.N);
+});
+addEventListener('keyup', e => keys.delete(e.code));
+addEventListener('blur', () => keys.clear());
+document.querySelectorAll('[data-n]').forEach(b => b.addEventListener('click', () => { setWorms(+b.dataset.n); b.blur(); }));
+$('camview').addEventListener('click', e => { switchView(); e.currentTarget.blur(); });
+$('xray').addEventListener('click', e => { showDots = !showDots; applyView(); e.currentTarget.blur(); });
+$('lights').addEventListener('click', e => { setLights(!isDay); e.currentTarget.blur(); });
+$('again').addEventListener('click', e => { setWorms(horde.N); e.currentTarget.blur(); });
+
+function resize() {
+  renderer.setSize(innerWidth, innerHeight, false);
+  camera.aspect = innerWidth / innerHeight;
+  camera.fov = camera.aspect < 1 ? 88 : 72;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+resize();
+
+/* ------------------------------------------------------------------ *
+ * Main loop.                                                          *
+ * ------------------------------------------------------------------ */
+let physMs = 0, acc = 0, last = performance.now(), frames = 0, fpsT = last, simTime = 0, paused = false, steppedSinceUpload = false;
+function stepHorde() {
+  const t = performance.now();
+  horde.step();
+  const ms = performance.now() - t;
+  physMs = physMs ? physMs * .9 + ms * .1 : ms;
+  steppedSinceUpload = true;
+}
+function upload() {
+  if (!steppedSinceUpload) return;
+  steppedSinceUpload = false;
+  dotTex.needsUpdate = true;
+  if (showDots) dotBuf.needsUpdate = true;
+}
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.max(0, Math.min(.05, (now - last) / 1000));   // the first frame's timestamp can predate `last`
+  last = now;
+  if (!paused) {
+    movePlayer(dt);
+    acc += dt;
+    const maxSteps = physMs > 11 ? 1 : 2;
+    let steps = 0;
+    while (acc >= DT && steps < maxSteps) { stepHorde(); acc -= DT; steps++; }
+    if (acc > DT) acc = DT;
+    simTime += dt;
+    wormUniforms.uTime.value = simTime;
+  }
+  upload();
+  if (flashLeft > 0) {
+    flashLeft -= dt;
+    const f = Math.max(flashLeft, 0) / .32;
+    flash.intensity = 900 * f * f;
+    boom.material.opacity = .5 * f;
+    boom.scale.setScalar(.5 + 5 * (1 - f));
+    if (flashLeft <= 0) { boom.visible = false; flash.intensity = 0; }
+  }
+  renderer.render(scene, camera);
+
+  frames++;
+  if (now - fpsT >= 500) {
+    const fps = Math.round(frames * 1000 / (now - fpsT));
+    frames = 0; fpsT = now;
+    const el = $('fps');
+    el.textContent = fps;
+    el.className = fps >= 50 ? '' : (fps >= 30 ? 'warn' : 'bad');
+    $('phys').textContent = physMs.toFixed(1) + ' ms';
+  }
+  if (hintTimer > 0) {
+    hintTimer -= dt;
+    if (hintTimer <= 0) $('hint').classList.add('gone');
+  }
+}
+
+$('bake').textContent = Math.round(bakeMs) + ' ms';
+setLights(false);
+setWorms(500);
+applyCamera();
+setHint();
+requestAnimationFrame(frame);
+
+/* Test hooks: run the physics without rendering and report what happened. */
+window.__horde = {
+  pause(p) { paused = p; },
+  set(n) { setWorms(n); },
+  place(x, y, z) { player.x = x; player.y = y; player.z = z; player.vy = 0; endTour(); },
+  lure(x, y, z) { player.x = x; player.y = y; player.z = z; player.vy = 0; tour = true; torchFor(true); applyCamera(); },
+  settle() { for (let i = 0; i < 80; i++) overhead(.1); },
+  view(y, p) { yaw = y; pitch = p; placeCamera(1); },
+  state() {
+    const a = new THREE.Vector3(0, 0, -1).applyQuaternion(orb.quaternion), c = camera.position;
+    return {
+      x: player.x, y: player.y, z: player.z, yaw, pitch, third: thirdPerson, tour, chaseD,
+      orbVisible: orb.visible, arrowVisible: arrow.visible, arrowDir: [a.x, a.y, a.z],
+      cam: [c.x, c.y, c.z], camClearance: sdf(c.x, c.y, c.z),
+      locked: document.pointerLockElement === canvas,
+      screen: (() => {
+        orb.updateMatrixWorld(true); camera.updateMatrixWorld();
+        const px = v => { const q = v.clone().project(camera); return [(q.x + 1) / 2 * innerWidth, (1 - q.y) / 2 * innerHeight]; };
+        const o = px(orb.position), t = px(orb.localToWorld(new THREE.Vector3(0, 0, -ARROW_END)));
+        return { orb: o, tip: t, arrowPx: Math.hypot(o[0] - t[0], o[1] - t[1]) };
+      })(),
+    };
+  },
+  spread() {
+    const c = hordeCentre(), P = horde.P; let s = 0;
+    for (let i = 0; i < horde.M; i++) s += Math.hypot(P[i * 4] - c.x, P[i * 4 + 1] - c.y, P[i * 4 + 2] - c.z);
+    return s / horde.M;
+  },
+  lights(d) { setLights(d); },
+  dots(on) { showDots = on; applyView(); dotBuf.needsUpdate = true; },
+  blastAt(x, y, z) { horde.blast(x, y, z, 6, .34); },
+  sim(n) {
+    const t = performance.now();
+    for (let i = 0; i < n; i++) horde.step();
+    steppedSinceUpload = true; upload();
+    return (performance.now() - t) / n;
+  },
+  stats() {
+    const P = horde.P, O = horde.O, M = horde.M, N = horde.N;
+    let speed = 0, onYou = 0, bad = 0, inside = 0, deep = 0, sum = 0, near3 = 0, near6 = 0, plat = 0, high = 0, maxLen = 0, top = 0, sumY = 0;
+    for (let i = 0; i < M; i++) {
+      const x = P[i * 4], y = P[i * 4 + 1], z = P[i * 4 + 2];
+      if (!isFinite(x + y + z)) { bad++; continue; }
+      const d = sdf(x, y, z);
+      if (d < 0) inside++;
+      if (d < -.1) deep++;
+      const r = Math.hypot(x - player.x, y - player.y - 1, z - player.z);
+      sum += r; if (r < 3) near3++; if (r < 6) near6++;
+      if (x > 12 && x < 22 && z > -22 && z < -12 && y > 4.4) plat++;
+      if (y > 1) high++;
+      if (y > top) top = y;
+      speed += Math.hypot(x - O[i * 3], y - O[i * 3 + 1], z - O[i * 3 + 2]);
+      if (Math.hypot(x - player.x, y - Math.min(Math.max(y, player.y + CAP), player.y + CAPH - CAP), z - player.z) - CAP < .2) onYou++;
+      sumY += y;
+    }
+    for (let w = 0; w < N; w++) {
+      let l = 0;
+      for (let k = 0; k < D - 1; k++) {
+        const a = (w * D + k) * 4;
+        l = Math.max(l, Math.hypot(P[a + 4] - P[a], P[a + 5] - P[a + 1], P[a + 6] - P[a + 2]));
+      }
+      if (l > maxLen) maxLen = l;
+    }
+    const pc = v => +(100 * v / M).toFixed(1);
+    return { meanSpeed: +(speed / M * 60).toFixed(2), onYouPct: pc(onYou), notFinite: bad, insidePct: pc(inside), deepPct: pc(deep), meanDist: +(sum / M).toFixed(2), near3Pct: pc(near3), near6Pct: pc(near6), onPlatformPct: pc(plat), above1mPct: pc(high), meanY: +(sumY / M).toFixed(2), topY: +top.toFixed(2), maxLinkRatio: +(maxLen / L).toFixed(2), pairs: horde.pairs() };
+  },
+};
+})();
+</script>
+</body>
+</html>
