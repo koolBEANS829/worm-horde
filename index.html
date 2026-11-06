@@ -67,6 +67,12 @@ button[aria-pressed="true"] { background: var(--flesh); border-color: var(--fles
 button[aria-pressed="true"] kbd { color: var(--pit); }
 kbd { font: inherit; font-size: .72rem; color: var(--ash); }
 @media (pointer: coarse) { kbd { display: none; } }
+.dials { position: fixed; top: max(12px, env(safe-area-inset-top, 0px)); right: max(16px, env(safe-area-inset-right, 0px)); width: min(280px, calc(100vw - 32px)); max-height: calc(100vh - 150px); overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--glass); border-radius: 3px; }
+.dials label { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; }
+.dials output { font-variant-numeric: tabular-nums; }
+.dials input { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--flesh); }
+.dials button { align-self: flex-end; }
+@media (max-width: 560px) { .dials { top: 104px; } }
 #fail { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding-block: 16px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); font-size: 1rem; background: var(--pit); }
 </style>
 </head>
@@ -95,6 +101,10 @@ kbd { font: inherit; font-size: .72rem; color: var(--ash); }
         <button id="n5000" data-n="5000"><kbd>5</kbd>5000</button>
       </div>
       <div class="group">
+        <button id="hordeview" aria-pressed="false"><kbd>H</kbd>Be the horde</button>
+        <button id="wormview" aria-pressed="false"><kbd>B</kbd>Be a worm</button>
+        <button id="order" aria-pressed="false" hidden><kbd>F</kbd>Chasing the orb</button>
+        <button id="dialsbtn" aria-pressed="false"><kbd>T</kbd>Dials</button>
         <button id="camview" aria-pressed="true"><kbd>C</kbd>Third person</button>
         <button id="xray" aria-pressed="false"><kbd>V</kbd>Show dots</button>
         <button id="lights" aria-pressed="false"><kbd>L</kbd>Lights on</button>
@@ -102,6 +112,9 @@ kbd { font: inherit; font-size: .72rem; color: var(--ash); }
       </div>
     </div>
   </div>
+</div>
+<div id="dials" class="dials" role="group" aria-label="Tuning dials" hidden>
+  <button id="dialsreset">Reset</button>
 </div>
 <div id="fail" hidden></div>
 
@@ -196,6 +209,40 @@ const player = { x: 17, y: 4.5, z: -17, vy: 0, grounded: false };
 const CAP = .42, CAPH = 1.85;
 
 /* ------------------------------------------------------------------ *
+ * Who you are: the orb, the whole horde, or one worm (always worm 0). *
+ * ------------------------------------------------------------------ */
+let mode = 'orb', order = 'chase';
+const DOT_CONTROL = true;     // true = the horde chases a dot you steer like a worm; false = the older spot with three arms
+const DOT_WIDTH = .5;         // how tightly the stream aims at the dot (1 = as wide as the chase)
+const STOP_R = 1.2;           // metres from the dot where the first worms to arrive stop
+const ARMS = 3;             // how many arms the horde splits into
+const ARM_FAN = .55;          // radians between neighbouring arms
+const ARM_REACH = 13;         // metres from the horde's average position to the tip of an arm
+const ARM_DELAY = .25;        // seconds you can push before arms start growing, so a tap is just a small move
+const ARM_GROW = 3;           // seconds of pushing until the arms are full length
+const ARM_PULL_IN = 1;        // how fast the arms pull back in when you let go: 1 = from full length in a second
+const ARM_TURN = 3.5;         // radians per second the arms swing round when you change direction
+const ARM_THIN = .3;          // how tightly each arm's worms aim at its line (1 = as wide as a resting pile)
+const ARM_WAVE = 2.2;         // metres an arm's tip swings to each side
+const SPOT_WALK = 1, SPOT_RUN = 2.2;   // metres per second WASD moves the spot the horde follows. Walking is slower than a worm crawls, which is what lets the arms stretch out
+const HOLD_LEAN = .8;         // metres a resting horde leans toward the orb
+const YOU_CRAWL = 1.3, YOU_RUN = 2;   // your crawl strength, against 1 for an average worm
+const YOU_AHEAD = 1.2;        // metres ahead of your head that your body aims
+const ArmDir = new Float32Array(ARMS * 2);
+// The settings you can change while playing, with T. These are their starting values and ranges.
+const DIALS = [
+  { id: 'dot', name: 'Dot speed', value: YOU_CRAWL, min: .4, max: 3, step: .05 },                // your crawl strength, against 1 for an average worm
+  { id: 'crawl', name: 'Worm speed', value: 1, min: .4, max: 2, step: .05 },                     // how hard every other worm crawls
+  { id: 'stretch', name: 'Stream stretch', value: .4, min: 0, max: .9, step: .05 },              // how far worms' speeds differ while chasing the dot
+  { id: 'stop', name: 'Stop spacing', value: .6, min: .1, max: 1.5, step: .05 },                 // square metres each stopped worm takes up, so the stopping area grows to fit
+  { id: 'wake', name: 'Wake delay', value: .12, min: 0, max: .5, step: .01 },                    // seconds of pushing before a stopped worm sets off, per metre it is from the dot
+  { id: 'squirm', name: 'Rest squirm', value: .2, min: 0, max: 1, step: .05 },                   // how much a stopped worm still squirms (1 = fully)
+];
+const tune = {};
+DIALS.forEach(d => { tune[d.id] = d.value; });
+const steer = { on: false, run: false, x: 0, z: 0, aimX: 1, aimZ: 0, dealtX: 1, dealtZ: 0, hold: 0, reach: 0, t: 0, cx: 0, cz: 0, leanX: 0, leanZ: 0, pushT: 0, nRest: 0 };
+
+/* ------------------------------------------------------------------ *
  * Horde physics: dots on strings, no rotation, no rigid bodies.       *
  * ------------------------------------------------------------------ */
 const D = 12;                 // dots per worm
@@ -216,7 +263,7 @@ function makeHorde(N) {
   const P = new Float32Array(M * 4);   // x,y,z,_ per dot; also the GPU texture
   const O = new Float32Array(M * 3);   // previous positions
   const Touch = new Uint8Array(M);
-  const Ox = new Float32Array(N), Oz = new Float32Array(N), Sp = new Float32Array(N), Ph = new Float32Array(N);
+  const Ox = new Float32Array(N), Oz = new Float32Array(N), Sp = new Float32Array(N), Ph = new Float32Array(N), Along = new Float32Array(N), Arm = new Uint8Array(N), Rest = new Uint8Array(N), Pace = new Float32Array(N);
   const TS = 1 << Math.ceil(Math.log2(M * 2)), MASK = TS - 1;
   const Start = new Int32Array(TS + 1), Order = new Int32Array(M), Key = new Int32Array(M);
   const MAXP = M * 16, Pairs = new Int32Array(MAXP * 2);
@@ -249,6 +296,52 @@ function makeHorde(N) {
       Ox[w] = Math.cos(a) * rad; Oz[w] = Math.sin(a) * rad;
       Sp[w] = .8 + Math.random() * .45;
       Ph[w] = Math.random() * 6.283;
+      Pace[w] = 1;
+    }
+  }
+
+  // Worms already out front the way you push get the fast paces, and the back gets the slow ones.
+  // Random paces do nothing: in a crowd, the fast worms just get stuck behind the slow ones.
+  function assignPace(ax, az) {
+    const ahead = new Float32Array(N);
+    for (let w = 0; w < N; w++) ahead[w] = P[w * D * 4] * ax + P[w * D * 4 + 2] * az;
+    const order = Int32Array.from({ length: N }, (_, w) => w).sort((a, b) => ahead[b] - ahead[a]);
+    for (let r = 0; r < N; r++) Pace[order[r]] = N > 1 ? 1 + tune.stretch - 2 * tune.stretch * r / (N - 1) : 1;
+  }
+
+  // Share out the arms by where each worm already is: the left of the pile takes the left arm, and the
+  // front takes the far spots. Random shares had worms shoving past each other and the pile never split.
+  function assignArms(cx, cz, ax, az) {
+    const side = new Float32Array(N), ahead = new Float32Array(N);
+    for (let w = 0; w < N; w++) {
+      const x = P[w * D * 4] - cx, z = P[w * D * 4 + 2] - cz;
+      side[w] = -x * az + z * ax; ahead[w] = x * ax + z * az;
+    }
+    const bySide = Int32Array.from({ length: N }, (_, w) => w).sort((a, b) => side[a] - side[b]);
+    for (let a = 0; a < ARMS; a++) {
+      const from = Math.floor(a * N / ARMS), to = Math.floor((a + 1) * N / ARMS);
+      const group = bySide.slice(from, to).sort((p, q) => ahead[q] - ahead[p]);
+      for (let r = 0; r < group.length; r++) {
+        const w = group[r];
+        Arm[w] = a;
+        Along[w] = group.length > 1 ? Math.pow(1 - r / (group.length - 1), 1.4) : 1;   // 0 root, 1 tip, more of them near the root
+      }
+    }
+  }
+
+  // The dot rides on worm 0. When you take the horde, swap that worm with the one nearest the middle, so the dot starts among them.
+  function dotToMiddle() {
+    let cx = 0, cz = 0, best = 0, bestD = Infinity;
+    for (let w = 0; w < N; w++) { cx += P[w * D * 4] / N; cz += P[w * D * 4 + 2] / N; }
+    for (let w = 0; w < N; w++) {
+      const d = Math.hypot(P[w * D * 4] - cx, P[w * D * 4 + 2] - cz);
+      if (d < bestD) { bestD = d; best = w; }
+    }
+    if (best === 0) return;
+    for (let i = 0; i < D; i++) {
+      const a = i, b = best * D + i;
+      for (let c = 0; c < 4; c++) { const t = P[a * 4 + c]; P[a * 4 + c] = P[b * 4 + c]; P[b * 4 + c] = t; }
+      for (let c = 0; c < 3; c++) { const t = O[a * 3 + c]; O[a * 3 + c] = O[b * 3 + c]; O[b * 3 + c] = t; }
     }
   }
 
@@ -256,22 +349,56 @@ function makeHorde(N) {
     tick++;
     const wave = tick * .14;
     const px = player.x, py = player.y, pz = player.z, gy = py + 1.2;
+    const isWorm = mode === 'worm', following = isWorm && order === 'follow';
+    const dotting = DOT_CONTROL && mode === 'horde' && order === 'follow', held = !DOT_CONTROL && mode === 'horde' && order === 'follow';
+    const aimAt = following ? (D - 1) * 4 : 0, tx = P[aimAt], ty = P[aimAt + 1], tz = P[aimAt + 2];   // your tail, or the dot
+    const moving = steer.on, pushT = steer.pushT, stopR = STOP_R + Math.sqrt(steer.nRest * tune.stop / Math.PI);
+    const wakeK = tune.wake, squirmK = tune.squirm, crawlK = tune.crawl, dotK = tune.dot;
+    let nRest = 0;
+    const reach = steer.reach, armWave = ARM_WAVE * reach / ARM_REACH, tight =1 + (ARM_THIN - 1) * Math.min(1, reach / 3);
     for (let w = 0; w < N; w++) {
       const b = w * D, b4 = b * 4;
       // Far off, each worm aims beside you so the horde fans out. Close in, they all aim at you.
       const near = Math.min(1, Math.hypot(P[b4] - px, P[b4 + 2] - pz) / AIM_NEAR);
-      const gx = px + Ox[w] * near, gz = pz + Oz[w] * near;
-      const drive = DRIVE * Sp[w], ph = Ph[w];
+      let gx = px + Ox[w] * near, gz = pz + Oz[w] * near, gh = gy, drive = DRIVE * Sp[w] * crawlK, resting = false;
+      if ((isWorm || dotting) && w === 0) {         // you, or the dot: aim just ahead of the head, or rest
+        gh = P[1];
+        if (steer.on) { gx = P[0] + steer.x * YOU_AHEAD; gz = P[2] + steer.z * YOU_AHEAD; drive = DRIVE * dotK * (steer.run ? YOU_RUN / YOU_CRAWL : 1); }
+        else { gx = P[0]; gz = P[2]; drive = 0; }
+      } else if (following || dotting) {
+        // Head for you or the dot, and stop on arriving. The stopping area grows with each worm that stops, so
+        // they spread out flat instead of bunching. Bunching is only for the orb. Pushing wakes them from the dot outward.
+        const td = Math.hypot(P[b4] - tx, P[b4 + 1] - ty, P[b4 + 2] - tz);
+        if (moving) { if (Rest[w] && td * wakeK < pushT) Rest[w] = 0; }
+        else if (td < stopR) Rest[w] = 1;
+        if (Rest[w]) {
+          resting = true; nRest++;
+          gx = P[b4]; gh = P[b4 + 1]; gz = P[b4 + 2]; drive *= squirmK;
+        } else {
+          const close = following ? 1 : DOT_WIDTH * Math.min(1, td / AIM_NEAR);
+          gx = tx + Ox[w] * close; gh = ty; gz = tz + Oz[w] * close;
+          if (dotting) drive = DRIVE * Pace[w] * crawlK;      // each worm's own pace, so the horde stretches into a stream
+        }
+      } else if (held) {
+        // Go to this worm's own place around the spot. With no arms out that's a pile; with arms out, a ribbon with a wave running down it.
+        const a = Arm[w] * 2, t = Along[w], r = t * reach, o = armWave * t * Math.sin(t * 4 - steer.t * 1.6 + a * 1.05);
+        gx = steer.cx + steer.leanX + ArmDir[a] * r - ArmDir[a + 1] * o + Ox[w] * tight;
+        gz = steer.cz + steer.leanZ + ArmDir[a + 1] * r + ArmDir[a] * o + Oz[w] * tight;
+        gx = Math.max(-HW + 1.5, Math.min(HW - 1.5, gx));
+        gz = Math.max(-HW + 1.5, Math.min(HW - 1.5, gz));
+        gh = 1.2;
+      }
+      const ph = Ph[w];
       for (let k = 0; k < D; k++) {
         const i = b + k, i4 = i * 4, i3 = i * 3;
         const x = P[i4], y = P[i4 + 1], z = P[i4 + 2];
         const vx = x - O[i3], vy = y - O[i3 + 1], vz = z - O[i3 + 2];
         O[i3] = x; O[i3 + 1] = y; O[i3 + 2] = z;
 
-        let dx = gx - x, dy = gy - y, dz = gz - z;
+        let dx = gx - x, dy = gh - y, dz = gz - z;
         const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) + 1e-4;
         dx /= dist; dy /= dist; dz /= dist;
-        const pull = 1 - .45 * k / (D - 1);
+        const pull = resting ? 0 : 1 - .45 * k / (D - 1);
 
         // What surface is this dot on: the level, or the player?
         let d = sdf(x, y, z), hit = d < STICK, nx = 0, ny = 1, nz = 0;
@@ -297,7 +424,7 @@ function makeHorde(N) {
           const wig = Math.sin(wave + k * .9 + ph) * .7 / L;
           const lx = (by * nz - bz * ny) * wig, ly = (bz * nx - bx * nz) * wig, lz = (bx * ny - by * nx) * wig;
 
-          const letGo = into > .3 && ny < .6;      // goal is out in the open: drop off the wall
+          const letGo = !resting && into > .3 && ny < .6;      // goal is out in the open: drop off the wall
           const adh = letGo ? 0 : .0035, gf = (letGo || ny > .6) ? 1 : .12;
           ax = (sx * pull + lx) * drive - nx * adh;
           ay = (sy * pull + ly) * drive - ny * adh - GRAV * gf;
@@ -321,6 +448,7 @@ function makeHorde(N) {
         P[i4] = x + nvx; P[i4 + 1] = y + nvy; P[i4 + 2] = z + nvz;
       }
     }
+    steer.nRest = nRest;
     Touch.fill(0);
   }
 
@@ -356,7 +484,7 @@ function makeHorde(N) {
 
   function solve() {
     const px = player.x, py = player.y, pz = player.z, lo = py + CAP, hi = py + CAPH - CAP;
-    const CAPR = CAP + R, CAPR2 = CAPR * CAPR;
+    const CAPR = CAP + R, CAPR2 = CAPR * CAPR, firm = mode === 'worm' || (DOT_CONTROL && mode === 'horde' && order === 'follow');
     for (let iter = 0; iter < ITER; iter++) {
       // Strings: shove neighbours back to their rest distance.
       for (let w = 0; w < N; w++) {
@@ -387,6 +515,11 @@ function makeHorde(N) {
         const l2 = dx * dx + dy * dy + dz * dz;
         if (l2 >= MIN2 || l2 < 1e-10) continue;
         const l = Math.sqrt(l2), s = (MIN - l) / l * .42;
+        if (firm && i < D && j >= D) {              // you shove through the pile; nothing shoves you
+          P[b4] += dx * s * 2; P[b4 + 1] += dy * s * 2; P[b4 + 2] += dz * s * 2;
+          Touch[i] = 1; Touch[j] = 1;
+          continue;
+        }
         P[a4] -= dx * s; P[a4 + 1] -= dy * s; P[a4 + 2] -= dz * s;
         P[b4] += dx * s; P[b4 + 1] += dy * s; P[b4 + 2] += dz * s;
         Touch[i] = 1; Touch[j] = 1;
@@ -428,7 +561,7 @@ function makeHorde(N) {
 
   spawn();
   return {
-    N, M, P, O, spawn, blast,
+    N, M, P, O, Along, Arm, Rest, spawn, blast, assignArms, dotToMiddle, assignPace,
     step() { crawl(); findPairs(); solve(); },
     pairs() { return np; },
   };
@@ -509,6 +642,12 @@ const arrow = new THREE.Mesh(new THREE.ShapeGeometry(arrowShape).rotateX(-Math.P
   new THREE.MeshBasicMaterial({ color: 0xffd76a, fog: false, transparent: true, depthTest: false, toneMapped: false, side: THREE.DoubleSide }));
 orb.add(arrow);
 orb.renderOrder = arrow.renderOrder = 5;
+// A small glow on your worm's head that shows through the pile.
+const youGlow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glow.material.map, color: 0xffd76a, blending: THREE.AdditiveBlending, transparent: true, depthTest: false, depthWrite: false, fog: false, toneMapped: false }));
+youGlow.scale.setScalar(.35);
+youGlow.renderOrder = 6;
+youGlow.visible = false;
+scene.add(youGlow);
 
 // Level meshes, with a procedural 1 m grid so scale is readable.
 const levelMat = new THREE.MeshStandardMaterial({ color: 0x8d9297, roughness: .92 });
@@ -551,14 +690,17 @@ CYLS.forEach(c => {
   m.castShadow = m.receiveShadow = true; scene.add(m);
 }
 
-const wormUniforms = { uDots: { value: null }, uTime: { value: 0 }, uRim: { value: .75 } };
+const wormUniforms = { uDots: { value: null }, uTime: { value: 0 }, uRim: { value: .75 }, uYou: { value: 0 }, uHide: { value: 0 } };
 const SKIN = `
 uniform highp sampler2D uDots;
 uniform float uTime;
+uniform float uYou;
+uniform float uHide;
 attribute float aWorm;
 attribute float aSeed;
 varying float vT;
 varying float vSeed;
+varying float vYou;
 const int WD = ${D};
 vec3 wormDot(int i, int w) { return texelFetch(uDots, ivec2(i, w), 0).xyz; }
 void wormSkin(out vec3 C, out vec3 Rd, out float rad) {
@@ -579,29 +721,32 @@ void wormSkin(out vec3 C, out vec3 Rd, out float rad) {
   float cap = pow(max(sin(3.14159 * clamp(t, 0., 1.)), 0.), .36);
   float pulse = 1. + .17 * sin(t * 15. - uTime * 7. + aSeed * 40.);
   rad = .072 * cap * pulse * (.82 + .36 * aSeed);
-  vT = t; vSeed = aSeed;
+  if (w == 0) rad *= 1. - uHide;
+  vT = t; vSeed = aSeed; vYou = w == 0 ? uYou : 0.;
 }`;
 const wormMat = new THREE.MeshStandardMaterial({ roughness: .3, metalness: 0 });
 wormMat.onBeforeCompile = s => {
-  s.uniforms.uDots = wormUniforms.uDots; s.uniforms.uTime = wormUniforms.uTime; s.uniforms.uRim = wormUniforms.uRim;
+  s.uniforms.uDots = wormUniforms.uDots; s.uniforms.uTime = wormUniforms.uTime; s.uniforms.uRim = wormUniforms.uRim; s.uniforms.uYou = wormUniforms.uYou; s.uniforms.uHide = wormUniforms.uHide;
   s.vertexShader = s.vertexShader
     .replace('#include <common>', '#include <common>\n' + SKIN)
     .replace('#include <beginnormal_vertex>', 'vec3 wC, wR; float wRad; wormSkin(wC, wR, wRad); vec3 objectNormal = wR;')
     .replace('#include <begin_vertex>', 'vec3 transformed = wC + wR * wRad;');
   s.fragmentShader = s.fragmentShader
-    .replace('#include <common>', '#include <common>\nvarying float vT; varying float vSeed; uniform float uRim;')
+    .replace('#include <common>', '#include <common>\nvarying float vT; varying float vSeed; varying float vYou; uniform float uRim;')
     .replace('#include <color_fragment>', `#include <color_fragment>
       vec3 wBase = mix(vec3(.50,.07,.11), vec3(.82,.27,.31), vSeed);
+      wBase = mix(wBase, vec3(.86,.58,.16), vYou);
       wBase *= 1. - .25 * pow(.5 + .5 * sin(vT * 130.), 8.);
       wBase = mix(wBase, vec3(.24,.03,.06), smoothstep(.1, .0, vT));
       diffuseColor.rgb = wBase;`)
     .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
       float wF = 1. - max(dot(normalize(normal), normalize(vViewPosition)), 0.);
-      totalEmissiveRadiance += vec3(.55,.10,.13) * pow(wF, 3.) * uRim;`);
+      totalEmissiveRadiance += vec3(.55,.10,.13) * pow(wF, 3.) * uRim;
+      totalEmissiveRadiance += vec3(.9,.55,.12) * .12 * vYou;`);
 };
 const wormDepth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
 wormDepth.onBeforeCompile = s => {
-  s.uniforms.uDots = wormUniforms.uDots; s.uniforms.uTime = wormUniforms.uTime;
+  s.uniforms.uDots = wormUniforms.uDots; s.uniforms.uTime = wormUniforms.uTime; s.uniforms.uYou = wormUniforms.uYou; s.uniforms.uHide = wormUniforms.uHide;
   s.vertexShader = s.vertexShader
     .replace('#include <common>', '#include <common>\n' + SKIN)
     .replace('#include <begin_vertex>', 'vec3 wC, wR; float wRad; wormSkin(wC, wR, wRad); vec3 transformed = wC + wR * wRad;');
@@ -678,6 +823,10 @@ function setWorms(N) {
   $('dots').textContent = horde.M.toLocaleString('en-US');
   document.querySelectorAll('[data-n]').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.n === N)));
   physMs = 0;
+  anchor.ready = false;
+  steer.hold = 0; steer.reach = 0; steer.nRest = 0;
+  if (mode === 'horde') { const c = hordeCentre(); steer.cx = c.x; steer.cz = c.z; }
+  applyCamera();
 }
 function applyView() {
   tubes.visible = !showDots;
@@ -713,9 +862,92 @@ const canvas = $('view');
 
 function angDiff(a, b) { let d = (b - a) % 6.28318; if (d > 3.14159) d -= 6.28318; if (d < -3.14159) d += 6.28318; return d; }
 
+// Reads WASD and the touch stick for the horde and worm views. Runs before every physics step.
+function updateSteer(dt) {
+  if (mode === 'orb') { steer.on = false; steer.hold = 0; return; }
+  let f = 0, s = 0;
+  if (keys.has('KeyW') || keys.has('ArrowUp')) f++;
+  if (keys.has('KeyS') || keys.has('ArrowDown')) f--;
+  if (keys.has('KeyD') || keys.has('ArrowRight')) s++;
+  if (keys.has('KeyA') || keys.has('ArrowLeft')) s--;
+  f -= stick.y; s += stick.x;
+  const l = Math.hypot(f, s), sn = Math.sin(yaw), cs = Math.cos(yaw);
+  steer.on = l > .05;
+  steer.run = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  if (steer.on) { steer.x = (-sn * f + cs * s) / l; steer.z = (-cs * f - sn * s) / l; }
+  steer.pushT = steer.on ? steer.pushT + dt : 0;
+  if (mode !== 'horde') return;
+
+  // WASD moves a spot and the horde follows it, so stopping the spot stops the horde.
+  // Arms fan out from the spot as you keep pushing. Each worm finds its own place on one in crawl().
+  steer.t += dt;
+  if (steer.on && order === 'chase') takeHorde();
+  if (DOT_CONTROL) {
+    // Share out the paces when a push starts, and again if it swings well away from the way they were shared.
+    if (steer.on && order === 'follow' && (steer.pushT <= dt || steer.x * steer.dealtX + steer.z * steer.dealtZ < .5)) {
+      horde.assignPace(steer.x, steer.z);
+      steer.dealtX = steer.x; steer.dealtZ = steer.z;
+    }
+    return;
+  }
+  if (order !== 'follow') return;
+  if (steer.on) {
+    const speed = steer.run ? SPOT_RUN : SPOT_WALK;
+    steer.cx = Math.max(-HW + 1.5, Math.min(HW - 1.5, steer.cx + steer.x * speed * dt));
+    steer.cz = Math.max(-HW + 1.5, Math.min(HW - 1.5, steer.cz + steer.z * speed * dt));
+    if (steer.hold <= 0 && steer.reach < 1) {
+      const c = hordeCentre();
+      steer.aimX = steer.x; steer.aimZ = steer.z;
+      horde.assignArms(c.x, c.z, steer.aimX, steer.aimZ);
+      steer.dealtX = steer.aimX; steer.dealtZ = steer.aimZ;
+    } else {
+      // Turn at a set speed. Blending toward the new way sticks forever when it's dead opposite, like W then S.
+      const now = Math.atan2(steer.aimZ, steer.aimX), turn = angDiff(now, Math.atan2(steer.z, steer.x));
+      const next = now + Math.sign(turn) * Math.min(Math.abs(turn), ARM_TURN * dt);
+      steer.aimX = Math.cos(next); steer.aimZ = Math.sin(next);
+      // Swung well away from how the arms were shared out: share again, or old tip worms shove back through the pile.
+      if (steer.aimX * steer.dealtX + steer.aimZ * steer.dealtZ < .5) {
+        const c = hordeCentre();
+        horde.assignArms(c.x, c.z, steer.aimX, steer.aimZ);
+        steer.dealtX = steer.aimX; steer.dealtZ = steer.aimZ;
+      }
+    }
+    steer.hold = Math.min(ARM_GROW, steer.hold + dt);
+    const g = Math.max(0, Math.min(1, (steer.hold - ARM_DELAY) / (ARM_GROW - ARM_DELAY)));
+    steer.reach = Math.max(ARM_REACH * g * g * (3 - 2 * g), steer.reach - ARM_REACH * ARM_PULL_IN * dt);
+  } else {
+    if (steer.hold > 0) {           // just let go: with long arms out, settle on where the worms actually are, so nothing slides back or on
+      const c = hordeCentre(), f = steer.reach / ARM_REACH;
+      steer.cx += (c.x - steer.cx) * f; steer.cz += (c.z - steer.cz) * f;
+      steer.hold = 0;
+    }
+    steer.reach = Math.max(0, steer.reach - ARM_REACH * ARM_PULL_IN * dt);
+  }
+  const lx = player.x - steer.cx, lz = player.z - steer.cz, ll = Math.hypot(lx, lz) || 1, lean = HOLD_LEAN * (1 - steer.reach / ARM_REACH) / ll;
+  steer.leanX = lx * lean; steer.leanZ = lz * lean;
+  for (let a = 0; a < ARMS; a++) {
+    const ang = (a - (ARMS - 1) / 2) * ARM_FAN, ca = Math.cos(ang), sa = Math.sin(ang);
+    ArmDir[a * 2] = steer.aimX * ca - steer.aimZ * sa;
+    ArmDir[a * 2 + 1] = steer.aimX * sa + steer.aimZ * ca;
+  }
+}
+
+// Back on the route from wherever you left the orb: the nearest waypoint it can walk straight to.
+function rejoinRoute() {
+  let best = -1, bestD = Infinity;
+  for (let i = 1; i < WAY.length; i++) {
+    const dx = WAY[i][0] - player.x, dz = WAY[i][1] - player.z, l = Math.hypot(dx, dz);
+    if (l >= bestD) continue;
+    let clear = true;
+    for (let t = .5; t < l && clear; t += .25) clear = sdf(player.x + dx * t / l, player.y + .95, player.z + dz * t / l) > CAP;
+    if (clear) { bestD = l; best = i; }
+  }
+  if (best > 0) wayI = best;
+}
+
 function movePlayer(dt) {
   let wx = 0, wz = 0, speed = 4.6;
-  if (tour) {
+  if (tour || mode !== 'orb') {
     if (dwell > 0 || reduced) { dwell -= dt; }
     else {
       const w = WAY[wayI], dx = w[0] - player.x, dz = w[1] - player.z, l = Math.hypot(dx, dz);
@@ -757,7 +989,9 @@ function movePlayer(dt) {
 }
 
 function placeCamera(dt) {
-  if (tour) overhead(dt);
+  if (mode === 'horde') { const c = hordeCentre(), P = horde.P; viewCam(dt, c.x, c.y + .5, c.z, 9, 5.5); youGlow.position.set(P[0], P[1], P[2]); }
+  else if (mode === 'worm') { const P = horde.P; viewCam(dt, P[0], P[1] + .2, P[2], 3, 1.8); youGlow.position.set(P[0], P[1], P[2]); }
+  else if (tour) overhead(dt);
   else if (thirdPerson) chaseCam(dt);
   else {
     camera.position.set(player.x, player.y + 1.6, player.z);
@@ -786,13 +1020,88 @@ function chaseCam(dt) {
   camera.position.set(px + ox * chaseD, py + oy * chaseD, pz + oz * chaseD);
 }
 
+// The horde and worm cameras: behind a moving spot, looking the way you look. The horde's average
+// position can be inside a pillar, so the search for a clear spot starts once it's out of solid things.
+const anchor = { x: 0, y: 0, z: 0, ready: false };
+function viewCam(dt, ax, ay, az, back, up) {
+  const k = anchor.ready ? Math.min(1, dt * 6) : 1;
+  anchor.ready = true;
+  anchor.x += (ax - anchor.x) * k; anchor.y += (ay - anchor.y) * k; anchor.z += (az - anchor.z) * k;
+  const px = anchor.x, py = anchor.y, pz = anchor.z;
+  camera.rotation.set(Math.max(-1.5, pitch - .21), yaw, 0);
+  orb.position.set(player.x, player.y + 1.2, player.z);
+  const cp = Math.cos(pitch), sp = Math.sin(pitch), sn = Math.sin(yaw), cs = Math.cos(yaw);
+  let ox = sn * (cp * back + sp * up), oy = cp * up - sp * back, oz = cs * (cp * back + sp * up);
+  const len = Math.hypot(ox, oy, oz);
+  ox /= len; oy /= len; oz /= len;
+  let t = .2;
+  while (t < len && sdf(px + ox * t, py + oy * t, pz + oz * t) < .25) t += .25;
+  while (t < len) {
+    const d = sdf(px + ox * t, py + oy * t, pz + oz * t);
+    if (d < .25) break;
+    t += Math.max(d - .2, .05);
+  }
+  if (t > len) t = len;
+  chaseD = t < chaseD ? t : chaseD + (t - chaseD) * Math.min(1, dt * 3);
+  camera.position.set(px + ox * chaseD, py + oy * chaseD, pz + oz * chaseD);
+}
+
 function applyCamera() {
-  const third = thirdPerson && !tour;
-  orb.visible = tour || third;
+  const third = thirdPerson && !tour && mode === 'orb', away = tour || mode !== 'orb';
+  orb.visible = away || third;
   arrow.visible = third;
   orb.material.depthTest = glow.material.depthTest = !third;
-  orbLight.intensity = tour ? 26 : 6;
+  orbLight.intensity = away ? 26 : 6;
   $('camview').setAttribute('aria-pressed', String(thirdPerson));
+  $('camview').hidden = mode !== 'orb';
+  $('hordeview').setAttribute('aria-pressed', String(mode === 'horde'));
+  $('wormview').setAttribute('aria-pressed', String(mode === 'worm'));
+  $('order').hidden = mode === 'orb';
+  $('order').setAttribute('aria-pressed', String(order === 'follow'));
+  $('order').lastChild.textContent = order === 'follow' ? 'Following you' : 'Chasing the orb';
+  const dot = DOT_CONTROL && mode === 'horde' && order === 'follow';
+  youGlow.visible = mode === 'worm' || dot;
+  youGlow.scale.setScalar(dot ? .9 : .35);
+  wormUniforms.uYou.value = mode === 'worm' ? 1 : 0;
+  wormUniforms.uHide.value = dot && horde && horde.N > 1 ? 1 : 0;    // the dot is the head of worm 0, with the body hidden
+}
+// H and B: join the worms, or press the same key again to go back to being the orb.
+function setMode(m) {
+  const next = mode === m ? 'orb' : m;
+  if (!tour && mode === 'orb') rejoinRoute();
+  endTour();
+  mode = next;
+  order = 'chase';
+  steer.on = false; steer.hold = 0; steer.reach = 0; steer.nRest = 0;
+  horde.Rest.fill(0);
+  anchor.ready = false;
+  if (next === 'orb') { pitch = -.12; }
+  else {
+    const a = next === 'horde' ? hordeCentre() : { x: horde.P[0], z: horde.P[2] };
+    yaw = Math.atan2(a.x - player.x, a.z - player.z);
+    pitch = next === 'horde' ? -.45 : -.2;
+  }
+  hintTimer = 7;
+  torchFor(next === 'horde');
+  applyCamera();
+  setHint();
+  if (!coarse && !dragMode && document.pointerLockElement !== canvas) lockMouse();
+}
+function takeHorde() {
+  if (DOT_CONTROL) horde.dotToMiddle();
+  const c = hordeCentre();
+  order = 'follow';
+  steer.cx = c.x; steer.cz = c.z; steer.hold = 0; steer.reach = 0; steer.nRest = 0;
+  horde.Rest.fill(0);
+  applyCamera();
+}
+function toggleOrder() {
+  if (mode === 'orb') return;
+  if (mode === 'horde' && order === 'chase') { takeHorde(); return; }
+  order = order === 'follow' ? 'chase' : 'follow';
+  steer.hold = 0; steer.reach = 0; steer.nRest = 0;
+  horde.Rest.fill(0);
+  applyCamera();
 }
 function switchView() {
   if (tour) { thirdPerson = true; endTour(); lockMouse(); return; }
@@ -825,6 +1134,7 @@ function overhead(dt) {
 
 let flashLeft = 0;
 function fireBlast() {
+  if (mode !== 'orb') return;      // you're on the worms' side now
   const sx = Math.sin(yaw), cx = Math.cos(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
   const dx = -sx * cp, dy = sp, dz = -cx * cp;
   const from = !tour && thirdPerson ? orb.position : camera.position;
@@ -853,7 +1163,10 @@ function fireBlast() {
 function setHint() {
   const h = $('hint');
   let text = '';
-  if (tour) text = coarse ? 'The worms are chasing the orb. Tap to become it.' : 'The worms are chasing the orb. Click to become it.';
+  if (!$('dials').hidden) text = coarse ? 'Move a dial and the worms change as you do.' : 'Drag a dial and the worms change as you do. WASD still steers, and dragging the view turns it. T closes.';
+  else if (mode === 'horde' && (coarse || dragMode || document.pointerLockElement === canvas)) text = coarse ? 'Left thumb moves the dot, and the horde chases it. Right thumb looks.' : 'WASD moves the dot, and the horde chases it. Shift hurries. F sends it after the orb. H goes back.';
+  else if (mode === 'worm' && (coarse || dragMode || document.pointerLockElement === canvas)) text = coarse ? 'Left thumb crawls. Right thumb looks.' : 'WASD crawls. Shift hurries. F switches the horde between chasing the orb and following you. B goes back.';
+  else if (tour) text = coarse ? 'The worms are chasing the orb. Tap to become it.' : 'The worms are chasing the orb. Click to become it, or press H or B to join them.';
   else if (coarse) text = 'Left thumb moves. Right thumb looks. Tap to blast.';
   else if (document.pointerLockElement === canvas) text = 'WASD moves. Shift runs. Space jumps. Click blasts. C switches view. Esc frees the mouse.';
   else if (dragMode) text = 'WASD moves. Drag to look. Click blasts. C switches view.';
@@ -876,6 +1189,7 @@ function endTour() {
   setHint();
 }
 function lockMouse() {
+  if (!$('dials').hidden) return;      // the dials need a free mouse
   try {
     const r = canvas.requestPointerLock();
     if (r && r.catch) r.catch(() => { dragMode = true; setHint(); });
@@ -896,7 +1210,7 @@ canvas.addEventListener('pointerdown', e => {
   if (e.button !== 0) return;
   if (tour) { endTour(); lockMouse(); return; }
   if (document.pointerLockElement === canvas) { fireBlast(); return; }
-  if (dragMode) { dragging = true; moved = 0; return; }
+  if (dragMode || !$('dials').hidden) { dragging = true; moved = 0; return; }
   lockMouse();
 });
 addEventListener('pointermove', e => {
@@ -940,7 +1254,11 @@ addEventListener('keydown', e => {
   if (e.repeat) return;
   const counts = { Digit0: 1, Digit1: 100, Digit2: 500, Digit3: 1000, Digit4: 2000, Digit5: 5000 };
   if (counts[e.code]) setWorms(counts[e.code]);
-  if (e.code === 'KeyC') switchView();
+  if (e.code === 'KeyC' && mode === 'orb') switchView();
+  if (e.code === 'KeyH') setMode('horde');
+  if (e.code === 'KeyB') setMode('worm');
+  if (e.code === 'KeyF') toggleOrder();
+  if (e.code === 'KeyT') toggleDials();
   if (e.code === 'KeyV') { showDots = !showDots; applyView(); }
   if (e.code === 'KeyL') setLights(!isDay);
   if (e.code === 'KeyR') setWorms(horde.N);
@@ -949,6 +1267,51 @@ addEventListener('keyup', e => keys.delete(e.code));
 addEventListener('blur', () => keys.clear());
 document.querySelectorAll('[data-n]').forEach(b => b.addEventListener('click', () => { setWorms(+b.dataset.n); b.blur(); }));
 $('camview').addEventListener('click', e => { switchView(); e.currentTarget.blur(); });
+$('hordeview').addEventListener('click', e => { setMode('horde'); e.currentTarget.blur(); });
+$('wormview').addEventListener('click', e => { setMode('worm'); e.currentTarget.blur(); });
+$('order').addEventListener('click', e => { toggleOrder(); e.currentTarget.blur(); });
+
+// The dials. They're remembered in this browser, so a reload keeps what you found.
+const DIALS_KEY = 'worm-horde-dials';
+function saveDials() { try { localStorage.setItem(DIALS_KEY, JSON.stringify(tune)); } catch (e) {} }
+function setDial(d, value) {
+  tune[d.id] = value;
+  $('dial-' + d.id).value = value;
+  $('dial-' + d.id + '-value').textContent = value.toFixed(2);
+  if (d.id === 'stretch' && mode === 'horde' && order === 'follow' && DOT_CONTROL) horde.assignPace(steer.dealtX, steer.dealtZ);
+}
+{
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(DIALS_KEY)) || {}; } catch (e) {}
+  DIALS.forEach(d => {
+    const label = document.createElement('label'), name = document.createElement('span'), out = document.createElement('output'), input = document.createElement('input');
+    name.textContent = d.name;
+    out.id = 'dial-' + d.id + '-value';
+    input.id = 'dial-' + d.id;
+    input.type = 'range'; input.min = d.min; input.max = d.max; input.step = d.step;
+    label.append(name, out, input);
+    $('dials').insertBefore(label, $('dialsreset'));
+    input.addEventListener('input', () => { setDial(d, +input.value); saveDials(); });
+    input.addEventListener('change', () => input.blur());    // or the arrow keys would move the dial as well as steering
+    const s = saved[d.id];
+    setDial(d, typeof s === 'number' && s >= d.min && s <= d.max ? s : d.value);
+  });
+}
+function toggleDials() {
+  const open = $('dials').hidden;
+  $('dials').hidden = !open;
+  $('dialsbtn').setAttribute('aria-pressed', String(open));
+  if (open && document.pointerLockElement === canvas) document.exitPointerLock();
+  if (!open && !tour && !coarse && !dragMode) lockMouse();
+  setHint();
+  hintTimer = !open && !tour ? 7 : 0;      // this hint stays while the dials are open, and the usual one fades again after
+}
+$('dialsbtn').addEventListener('click', e => { toggleDials(); e.currentTarget.blur(); });
+$('dialsreset').addEventListener('click', e => {
+  DIALS.forEach(d => setDial(d, d.value));
+  saveDials();
+  e.currentTarget.blur();
+});
 $('xray').addEventListener('click', e => { showDots = !showDots; applyView(); e.currentTarget.blur(); });
 $('lights').addEventListener('click', e => { setLights(!isDay); e.currentTarget.blur(); });
 $('again').addEventListener('click', e => { setWorms(horde.N); e.currentTarget.blur(); });
@@ -985,6 +1348,7 @@ function frame(now) {
   last = now;
   if (!paused) {
     movePlayer(dt);
+    updateSteer(dt);
     acc += dt;
     const maxSteps = physMs > 11 ? 1 : 2;
     let steps = 0;
@@ -1034,9 +1398,49 @@ window.__horde = {
   lure(x, y, z) { player.x = x; player.y = y; player.z = z; player.vy = 0; tour = true; torchFor(true); applyCamera(); },
   settle() { for (let i = 0; i < 80; i++) overhead(.1); },
   view(y, p) { yaw = y; pitch = p; placeCamera(1); },
+  dwell(s) { dwell = s; },
+  walk(n) { for (let i = 0; i < n; i++) movePlayer(DT); },
+  centre() { return hordeCentre(); },
+  you() { return { x: horde.P[0], y: horde.P[1], z: horde.P[2] }; },
+  putYou(x, y, z) {
+    const P = horde.P, O = horde.O;
+    for (let k = 0; k < D; k++) {
+      P[k * 4] = O[k * 3] = x; P[k * 4 + 1] = O[k * 3 + 1] = y; P[k * 4 + 2] = O[k * 3 + 2] = z + k * L;
+    }
+  },
+  meanToYou() {
+    const P = horde.P; let s = 0;
+    for (let w = 1; w < horde.N; w++) s += Math.hypot(P[w * D * 4] - P[0], P[w * D * 4 + 1] - P[1], P[w * D * 4 + 2] - P[2]);
+    return s / Math.max(1, horde.N - 1);
+  },
+  meanBehindYou() {        // how far behind your head the others are, along the way your body points
+    const P = horde.P, t = (D - 1) * 4; let dx = P[0] - P[t], dz = P[2] - P[t + 2], s = 0;
+    const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l;
+    for (let w = 1; w < horde.N; w++) s += (P[0] - P[w * D * 4]) * dx + (P[2] - P[w * D * 4 + 2]) * dz;
+    return s / Math.max(1, horde.N - 1);
+  },
+  armEnds() {              // average position of each arm's worms
+    const P = horde.P, out = [];
+    for (let a = 0; a < ARMS; a++) {
+      let x = 0, z = 0, n = 0;
+      for (let w = 0; w < horde.N; w++) if (horde.Arm[w] === a) { x += P[w * D * 4]; z += P[w * D * 4 + 2]; n++; }
+      out.push({ x: x / (n || 1), z: z / (n || 1) });
+    }
+    return out;
+  },
+  armTips() {              // average position of the worms bound for the far end of each arm
+    const P = horde.P, out = [];
+    for (let a = 0; a < ARMS; a++) {
+      let x = 0, z = 0, n = 0;
+      for (let w = 0; w < horde.N; w++) if (horde.Arm[w] === a && horde.Along[w] > .75) { x += P[w * D * 4]; z += P[w * D * 4 + 2]; n++; }
+      out.push({ x: x / (n || 1), z: z / (n || 1) });
+    }
+    return out;
+  },
   state() {
     const a = new THREE.Vector3(0, 0, -1).applyQuaternion(orb.quaternion), c = camera.position;
     return {
+      mode, order, control: DOT_CONTROL ? 'dot' : 'spot', dot: DOT_CONTROL && mode === 'horde' && youGlow.visible,
       x: player.x, y: player.y, z: player.z, yaw, pitch, third: thirdPerson, tour, chaseD,
       orbVisible: orb.visible, arrowVisible: arrow.visible, arrowDir: [a.x, a.y, a.z],
       cam: [c.x, c.y, c.z], camClearance: sdf(c.x, c.y, c.z),
@@ -1059,7 +1463,7 @@ window.__horde = {
   blastAt(x, y, z) { horde.blast(x, y, z, 6, .34); },
   sim(n) {
     const t = performance.now();
-    for (let i = 0; i < n; i++) horde.step();
+    for (let i = 0; i < n; i++) { updateSteer(DT); horde.step(); }
     steppedSinceUpload = true; upload();
     return (performance.now() - t) / n;
   },
